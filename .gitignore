@@ -1,0 +1,14 @@
+.env
+.claude/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+*.db
+data/
+summaries/*.md
+!summaries/.gitkeep
