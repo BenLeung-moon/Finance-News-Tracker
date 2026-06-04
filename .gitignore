@@ -12,3 +12,4 @@ build/
 data/
 summaries/*.md
 !summaries/.gitkeep
+summaries/*.docx

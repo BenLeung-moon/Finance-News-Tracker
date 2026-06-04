@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from time import struct_time
 
 import feedparser
 import httpx
+from bs4 import BeautifulSoup
 
 from finance_news_tracker.collectors.utils import content_hash
 from finance_news_tracker.config import SourceConfig, Settings
@@ -31,11 +33,20 @@ def _parse_published(entry: dict) -> datetime | None:
     return None
 
 
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and collapse whitespace from RSS description fields."""
+    if not text or "<" not in text:
+        return text.strip()
+    soup = BeautifulSoup(text, "lxml")
+    plain = soup.get_text(separator=" ", strip=True)
+    return re.sub(r"\s+", " ", plain).strip()
+
+
 def _clean_summary(entry: dict) -> str:
     summary = entry.get("summary") or entry.get("description") or ""
     if hasattr(summary, "value"):
         summary = summary.value
-    return str(summary).strip()[:2000]
+    return _strip_html(str(summary))[:2000]
 
 
 def collect_rss(source: SourceConfig, settings: Settings) -> list[Article]:

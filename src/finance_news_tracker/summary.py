@@ -11,6 +11,10 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from finance_news_tracker.config import Settings
+from finance_news_tracker.dedupe import (
+    dedupe_scored_items,
+    diversify_scored_items,
+)
 from finance_news_tracker.store import Store
 from finance_news_tracker.word_export import write_word_summary
 
@@ -18,7 +22,7 @@ logger = logging.getLogger(__name__)
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
 SUMMARY_SYSTEM_PROMPT = """You are a senior FX strategist writing an executive summary for
-USD/JPY traders based on scored Japanese financial news.
+USD/JPY traders based on scored financial news (Japan, US policy, and international FX media).
 
 Write in clear English. Be concise and actionable. Do not claim statistical correlation;
 frame insights as narrative relevance and market transmission. The per-article relevance
@@ -64,6 +68,11 @@ def _source_label(source_id: str) -> str:
         "boj_statistics": "BOJ Statistics",
         "nikkei_asia": "Nikkei Asia",
         "nhk_world": "NHK WORLD-JAPAN",
+        "fed_press_monetary": "Federal Reserve (Monetary Policy)",
+        "fed_speeches": "Federal Reserve (Speeches)",
+        "us_treasury_press": "US Treasury",
+        "fxstreet_news": "FXStreet",
+        "investing_forex": "Investing.com (Forex)",
     }
     return labels.get(source_id, source_id)
 
@@ -172,7 +181,10 @@ def render_markdown(
     llm_summary: dict[str, Any],
     items: list[dict[str, Any]],
     generated_at: datetime,
+    *,
+    citation_items: list[dict[str, Any]] | None = None,
 ) -> str:
+    citations = citation_items if citation_items is not None else items
     watchlist = llm_summary.get("watchlist") or []
     market_read = llm_summary.get("market_read", "")
 
@@ -180,7 +192,8 @@ def render_markdown(
         "# USD/JPY Executive Summary",
         "",
         f"**Generated:** {_format_generated_time(generated_at)}",
-        f"**Sources:** Bank of Japan, Nikkei Asia, NHK WORLD-JAPAN",
+        "**Sources:** BOJ, Nikkei Asia, NHK, Federal Reserve, US Treasury, "
+        "FXStreet, Investing.com",
         "",
         "## Market Read",
         "",
@@ -211,7 +224,7 @@ def render_markdown(
         lines.append("- Watch US data (CPI, payrolls) for rate differential moves")
 
     lines.extend(["", "## Source Citations", ""])
-    for item in items[:10]:
+    for item in citations[:10]:
         lines.append(
             f"- [{item['title']}]({item['url']}) — "
             f"{_source_label(item['source'])}, {_display_date(item)}"
@@ -221,6 +234,24 @@ def render_markdown(
     lines.append("---")
     lines.append("*Generated locally by finance-news-tracker*")
     return "\n".join(lines)
+
+
+def prepare_summary_items(
+    items: list[dict[str, Any]],
+    settings: Settings,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return (story_items, citation_items): diverse top stories, broader deduped citations."""
+    threshold = settings.dedupe_similarity_threshold
+    story_items = diversify_scored_items(
+        items,
+        max_items=12,
+        max_per_source=settings.summary_max_per_source,
+        threshold=threshold,
+    )
+    if not story_items:
+        story_items = dedupe_scored_items(items, threshold, max_items=12)
+    citation_items = dedupe_scored_items(items, threshold, max_items=15)
+    return story_items, citation_items
 
 
 def write_executive_summary(
@@ -241,9 +272,11 @@ def write_executive_summary(
         logger.warning("No recent scored articles available for summary.")
         return None
 
+    story_items, citation_items = prepare_summary_items(items, settings)
+
     now = datetime.now(HK_TZ)
     try:
-        llm_summary = generate_executive_summary_llm(items, settings)
+        llm_summary = generate_executive_summary_llm(story_items, settings)
     except Exception:
         logger.exception("LLM summary failed; using score-only fallback")
         # Top Stories are rendered from `items` regardless, so the fallback only
@@ -261,7 +294,12 @@ def write_executive_summary(
                 "USD/JPY intervention rhetoric near key levels",
             ],
         }
-    body = render_markdown(llm_summary, items, now)
+    body = render_markdown(
+        llm_summary,
+        story_items,
+        now,
+        citation_items=citation_items,
+    )
 
     settings.summaries_dir.mkdir(parents=True, exist_ok=True)
     stem = f"usdjpy_summary_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -270,7 +308,11 @@ def write_executive_summary(
 
     try:
         docx_path = write_word_summary(
-            llm_summary, items, now, settings.summaries_dir / f"{stem}.docx"
+            llm_summary,
+            story_items,
+            now,
+            settings.summaries_dir / f"{stem}.docx",
+            citation_items=citation_items,
         )
         logger.info("Wrote Word summary to %s", docx_path)
     except Exception:

@@ -15,6 +15,8 @@ from finance_news_tracker.models import Article
 logger = logging.getLogger(__name__)
 
 NHK_BASE = "https://www3.nhk.or.jp"
+TREASURY_BASE = "https://home.treasury.gov"
+TREASURY_RELEASE_RE = re.compile(r"/news/press-releases/sb\d+", re.IGNORECASE)
 DATE_PATTERN = re.compile(
     r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
     r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
@@ -23,7 +25,7 @@ DATE_PATTERN = re.compile(
 )
 
 
-def _parse_nhk_date(text: str) -> datetime | None:
+def _parse_english_date(text: str) -> datetime | None:
     match = DATE_PATTERN.search(text)
     if not match:
         return None
@@ -35,13 +37,61 @@ def _parse_nhk_date(text: str) -> datetime | None:
     return None
 
 
+def _parse_nhk_date(text: str) -> datetime | None:
+    return _parse_english_date(text)
+
+
 def _normalize_url(href: str, base_url: str) -> str:
     if href.startswith("http"):
         return href
     return urljoin(base_url, href)
 
 
+def _extract_treasury_from_page(
+    soup: BeautifulSoup, source: SourceConfig, page_url: str
+) -> list[Article]:
+    """Parse US Treasury press release list (no public RSS; HTML list only)."""
+    articles: list[Article] = []
+    seen_urls: set[str] = set()
+
+    for link in soup.find_all("a", href=True):
+        href = link.get("href", "").strip()
+        if not TREASURY_RELEASE_RE.search(href):
+            continue
+
+        title = link.get_text(strip=True)
+        if not title or len(title) < 12:
+            continue
+        if title.lower().startswith("view all"):
+            continue
+
+        url = _normalize_url(href, TREASURY_BASE)
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+
+        parent = link.find_parent(["article", "li", "div", "section"])
+        context = parent.get_text(" ", strip=True) if parent else ""
+        published_at = _parse_english_date(context)
+
+        articles.append(
+            Article(
+                source=source.id,
+                title=title,
+                url=url,
+                published_at=published_at,
+                summary=context[:500] if context else "",
+                content_hash=content_hash(source.id, title, url),
+                raw_excerpt=context[:300],
+            )
+        )
+
+    return articles
+
+
 def _extract_from_page(soup: BeautifulSoup, source: SourceConfig, page_url: str) -> list[Article]:
+    if source.id.startswith("us_treasury_"):
+        return _extract_treasury_from_page(soup, source, page_url)
     articles: list[Article] = []
     seen_urls: set[str] = set()
 
@@ -95,7 +145,7 @@ def collect_html(source: SourceConfig, settings: Settings) -> list[Article]:
                 response = client.get(page_url)
                 response.raise_for_status()
             except httpx.HTTPError:
-                logger.exception("Failed to fetch NHK page: %s", page_url)
+                logger.exception("Failed to fetch HTML page: %s", page_url)
                 continue
 
             soup = BeautifulSoup(response.text, "lxml")

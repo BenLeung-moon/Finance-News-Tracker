@@ -1,16 +1,20 @@
 # Finance News Tracker
 
-Local USD/JPY news tracker that collects fresh items from **Bank of Japan**, **Nikkei Asia** (public RSS), and **NHK WORLD-JAPAN**, scores USD/JPY relevance with **DeepSeek API**, and writes an **executive summary** to `summaries/`.
+Local USD/JPY news tracker that collects fresh items from **Japan** (BOJ, Nikkei Asia, NHK), **US official** (Federal Reserve, US Treasury), and **international FX media** (FXStreet, Investing.com), scores USD/JPY relevance with **DeepSeek API**, and writes an **executive summary** to `summaries/`.
 
-中文注解：本地运行、阶段性抓取、DeepSeek 打分与汇总；不绕过 Nikkei 付费墙。
+中文注解：本地运行、RSS/HTML 抓取、DeepSeek 打分与汇总；仅使用公开 RSS，不绕过付费墙或反爬。
 
 ## Sources
 
 | Source | Method | URL |
 |--------|--------|-----|
-| Bank of Japan | Official English RSS | `/en/rss/whatsnew.xml`, `/en/rss/statistics.xml` |
+| Bank of Japan | Official English RSS | `boj.or.jp/en/rss/whatsnew.xml`, `statistics.xml` |
 | Nikkei | Nikkei Asia public RSS | `asia.nikkei.com/rss/feed/nar` |
 | NHK WORLD | Polite HTML list/tag pages | `nhkworld/en/news/...` |
+| Federal Reserve | Official RSS | `federalreserve.gov/feeds/press_monetary.xml`, `speeches.xml` |
+| US Treasury | HTML press list (RSS unavailable) | `home.treasury.gov/news/press-releases` |
+| FXStreet | Forex news RSS | `fxstreet.com/rss/news` |
+| Investing.com | Forex RSS | `investing.com/rss/forex.rss` |
 
 ## Requirements
 
@@ -70,8 +74,9 @@ Output:
 ## Pipeline
 
 ```
-BOJ / Nikkei RSS / NHK HTML
+BOJ / Nikkei / Fed / Treasury / FXStreet / Investing.com RSS + NHK HTML
   → HTML head backfill (date/excerpt the feed omitted, e.g. Nikkei)
+  → RSS HTML stripped from descriptions where needed
   → SQLite (dedupe) → keyword prefilter → DeepSeek score
   → executive summary (Markdown + Word)
 ```

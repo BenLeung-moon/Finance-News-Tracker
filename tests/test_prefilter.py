@@ -30,14 +30,104 @@ def test_boj_macro_fallback():
     assert hit is True
 
 
+def test_fed_macro_fallback():
+    settings = get_settings()
+    article = Article(
+        source="fed_speeches",
+        title="Speech by Chair Powell on the economic outlook",
+        url="https://www.federalreserve.gov/example",
+        published_at=datetime.now(timezone.utc),
+    )
+    hit, hits = prefilter_article(article, settings)
+    assert hit is True
+    assert "fed_macro" in hits or "powell" in hits
+
+
+def test_us_treasury_macro_fallback():
+    settings = get_settings()
+    article = Article(
+        source="us_treasury_press",
+        title="Treasury International Capital Data for March",
+        url="https://home.treasury.gov/example",
+        published_at=datetime.now(timezone.utc),
+    )
+    hit, hits = prefilter_article(article, settings)
+    assert hit is True
+
+
+def test_rank_prioritizes_official_over_media():
+    settings = get_settings()
+    settings.max_articles_to_score = 10
+    now = datetime.now(timezone.utc)
+    articles = [
+        (
+            Article(
+                source="fxstreet_news",
+                title="USD/JPY steady as celebrity home sales slump in LA",
+                url="https://fxstreet.com/low-signal",
+                published_at=now,
+            ),
+            1,
+        ),
+        (
+            Article(
+                source="fed_press_monetary",
+                title="FOMC issues monetary policy statement",
+                url="https://federalreserve.gov/fomc",
+                published_at=now,
+            ),
+            2,
+        ),
+    ]
+    ranked = rank_for_scoring(articles, settings)
+    assert ranked[0][0].source.startswith("fed_")
+
+
+def test_media_generic_headline_excluded_from_rank():
+    settings = get_settings()
+    settings.max_articles_to_score = 10
+    now = datetime.now(timezone.utc)
+    articles = [
+        (
+            Article(
+                source="investing_forex",
+                title="Forex today: majors mixed in quiet session",
+                url="https://investing.com/generic",
+                published_at=now,
+            ),
+            1,
+        ),
+        (
+            Article(
+                source="boj_whatsnew",
+                title="Statement on Monetary Policy",
+                url="https://www.boj.or.jp/en/example",
+                published_at=now,
+            ),
+            2,
+        ),
+    ]
+    ranked = rank_for_scoring(articles, settings)
+    sources = {a.source for a, _ in ranked}
+    assert "investing_forex" not in sources
+    assert "boj_whatsnew" in sources
+
+
 def test_rank_limits_results():
     settings = get_settings()
     settings.max_articles_to_score = 2
+    titles = [
+        "Statement on Monetary Policy at MPM",
+        "Tankan quarterly survey released",
+        "BOJ purchases JGBs under outright program",
+        "Summary of opinions at January MPM",
+        "Outlook for economic activity and prices",
+    ]
     articles = [
         (
             Article(
                 source="boj_whatsnew",
-                title="Monetary Policy Statement",
+                title=titles[i],
                 url=f"https://example.com/{i}",
                 published_at=datetime.now(timezone.utc),
             ),

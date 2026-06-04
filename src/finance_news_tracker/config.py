@@ -53,6 +53,21 @@ FX_KEYWORDS: list[str] = [
     "tankan",
     "mpm",
     "statement on monetary policy",
+    "fomc",
+    "powell",
+    "fed funds",
+    "treasury yields",
+    "tic",
+    "treasury international capital",
+    "quarterly refunding",
+    "payrolls",
+    "pce",
+    "ppi",
+    "retail sales",
+    "ism",
+    "tariff",
+    "debt issuance",
+    "fiscal",
 ]
 
 
@@ -95,6 +110,36 @@ SOURCES: list[SourceConfig] = [
             "https://www3.nhk.or.jp/nhkworld/en/news/",
         ],
     ),
+    SourceConfig(
+        id="fed_press_monetary",
+        name="Federal Reserve (Monetary Policy Press)",
+        kind="rss",
+        url="https://www.federalreserve.gov/feeds/press_monetary.xml",
+    ),
+    SourceConfig(
+        id="fed_speeches",
+        name="Federal Reserve (Speeches)",
+        kind="rss",
+        url="https://www.federalreserve.gov/feeds/speeches.xml",
+    ),
+    SourceConfig(
+        id="us_treasury_press",
+        name="US Treasury (Press Releases)",
+        kind="html",
+        url="https://home.treasury.gov/news/press-releases",
+    ),
+    SourceConfig(
+        id="fxstreet_news",
+        name="FXStreet (Forex News)",
+        kind="rss",
+        url="https://www.fxstreet.com/rss/news",
+    ),
+    SourceConfig(
+        id="investing_forex",
+        name="Investing.com (Forex)",
+        kind="rss",
+        url="https://www.investing.com/rss/forex.rss",
+    ),
 ]
 
 
@@ -110,6 +155,11 @@ class Settings:
     request_timeout_seconds: int
     user_agent: str
     fx_keywords: list[str] = field(default_factory=lambda: list(FX_KEYWORDS))
+    # Per-source caps for noisy FX media feeds (FXStreet, Investing.com)
+    fx_media_score_limit_per_source: int = 3
+    fx_media_score_limit_combined: int = 5
+    dedupe_similarity_threshold: float = 0.82
+    summary_max_per_source: int = 2
 
     @property
     def db_path(self) -> Path:
@@ -131,6 +181,16 @@ def get_settings() -> Settings:
         recency_hours=int(os.getenv("RECENCY_HOURS", "72")),
         min_relevance_score=int(os.getenv("MIN_RELEVANCE_SCORE", "40")),
         max_articles_to_score=int(os.getenv("MAX_ARTICLES_TO_SCORE", "25")),
+        fx_media_score_limit_per_source=int(
+            os.getenv("FX_MEDIA_SCORE_LIMIT_PER_SOURCE", "3")
+        ),
+        fx_media_score_limit_combined=int(
+            os.getenv("FX_MEDIA_SCORE_LIMIT_COMBINED", "5")
+        ),
+        dedupe_similarity_threshold=float(
+            os.getenv("DEDUPE_SIMILARITY_THRESHOLD", "0.82")
+        ),
+        summary_max_per_source=int(os.getenv("SUMMARY_MAX_PER_SOURCE", "2")),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30")),
         user_agent=os.getenv(
             "USER_AGENT",

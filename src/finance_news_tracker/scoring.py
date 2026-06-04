@@ -13,8 +13,8 @@ from finance_news_tracker.models import Article, ScoreResult
 
 logger = logging.getLogger(__name__)
 
-SCORING_SYSTEM_PROMPT = """You are a senior FX strategist analyzing Japanese financial news
-for relevance to USD/JPY (US dollar vs Japanese yen).
+SCORING_SYSTEM_PROMPT = """You are a senior FX strategist analyzing financial news
+(Japan, US policy, international FX) for relevance to USD/JPY (US dollar vs Japanese yen).
 
 Score each article for how likely it is to move or inform USD/JPY trading in the near term.
 This is explanatory relevance, not statistical correlation.

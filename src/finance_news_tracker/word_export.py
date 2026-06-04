@@ -34,6 +34,11 @@ _SOURCE_LABELS = {
     "boj_statistics": "BOJ Statistics",
     "nikkei_asia": "Nikkei Asia",
     "nhk_world": "NHK WORLD-JAPAN",
+    "fed_press_monetary": "Federal Reserve (Monetary Policy)",
+    "fed_speeches": "Federal Reserve (Speeches)",
+    "us_treasury_press": "US Treasury",
+    "fxstreet_news": "FXStreet",
+    "investing_forex": "Investing.com (Forex)",
 }
 
 
@@ -141,8 +146,11 @@ def write_word_summary(
     items: list[dict[str, Any]],
     generated_at: datetime,
     out_path: Path,
-    max_stories: int = 5,
+    max_stories: int = 7,
+    *,
+    citation_items: list[dict[str, Any]] | None = None,
 ) -> Path:
+    citations = citation_items if citation_items is not None else items
     doc = Document()
 
     # Compact margins give the content more room to stay on one page.
@@ -165,7 +173,8 @@ def write_word_summary(
     _tight(meta, after=2)
     mr = meta.add_run(
         f"Generated {_format_generated_time(generated_at)}  |  "
-        "Sources: Bank of Japan, Nikkei Asia, NHK WORLD-JAPAN"
+        "Sources: BOJ, Nikkei Asia, NHK, Federal Reserve, US Treasury, "
+        "FXStreet, Investing.com"
     )
     mr.font.size = Pt(8)
     mr.font.color.rgb = GREY
@@ -213,7 +222,7 @@ def write_word_summary(
     doc.add_page_break()
 
     _heading(doc, "Source Citations")
-    for item in items[:15]:
+    for item in citations[:15]:
         p = doc.add_paragraph(style="List Bullet")
         _tight(p, after=3)
         _add_hyperlink(p, item["url"], item["title"], size=9)
