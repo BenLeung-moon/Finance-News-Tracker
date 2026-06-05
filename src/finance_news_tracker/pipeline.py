@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from finance_news_tracker.collectors import collect_all
 from finance_news_tracker.config import get_settings
+from finance_news_tracker.manifest import GeneratedReport
 from finance_news_tracker.prefilter import rank_for_scoring
 from finance_news_tracker.scoring import score_articles_batch
 from finance_news_tracker.store import get_store
@@ -48,13 +48,13 @@ def run_score() -> int:
     return len(results)
 
 
-def run_summarize() -> Path | None:
+def run_summarize() -> GeneratedReport | None:
     settings = get_settings()
     store = get_store(settings)
     return write_executive_summary(store, settings)
 
 
-def run_once() -> Path | None:
+def run_once() -> GeneratedReport | None:
     stats = run_collect()
     logger.info("Collect stats: %s", stats)
     scored = run_score()

@@ -143,17 +143,49 @@ SOURCES: list[SourceConfig] = [
 ]
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_email_recipients(value: str) -> list[str]:
+    """Parse comma-separated recipient addresses; empty entries are dropped."""
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
 @dataclass
 class Settings:
     deepseek_api_key: str
     deepseek_base_url: str
     deepseek_model: str
     data_dir: Path
+    summaries_dir: Path
+    log_dir: Path
     recency_hours: int
     min_relevance_score: int
     max_articles_to_score: int
     request_timeout_seconds: int
     user_agent: str
+    # Scheduling / deployment
+    run_timezone: str
+    run_weekdays_only: bool
+    holiday_guard_enabled: bool
+    report_retention_days: int
+    log_level: str
+    # Email delivery (adapter layer; not used by run-once itself)
+    email_enabled: bool
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_use_tls: bool
+    smtp_use_ssl: bool
+    email_from: str
+    email_to: list[str]
+    email_subject_prefix: str
+    email_attach_docx: bool
     fx_keywords: list[str] = field(default_factory=lambda: list(FX_KEYWORDS))
     # Per-source caps for noisy FX media feeds (FXStreet, Investing.com)
     fx_media_score_limit_per_source: int = 3
@@ -166,18 +198,28 @@ class Settings:
         return self.data_dir / "tracker.db"
 
     @property
-    def summaries_dir(self) -> Path:
-        return Path("summaries")
+    def latest_report_manifest_path(self) -> Path:
+        return self.summaries_dir / "latest_report.json"
+
+    @property
+    def run_lock_path(self) -> Path:
+        return self.data_dir / "run.lock"
 
 
 def get_settings() -> Settings:
     data_dir = Path(os.getenv("DATA_DIR", "data"))
+    summaries_dir = Path(os.getenv("SUMMARIES_DIR", "summaries"))
+    log_dir = Path(os.getenv("LOG_DIR", "logs"))
     data_dir.mkdir(parents=True, exist_ok=True)
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
     return Settings(
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
         data_dir=data_dir,
+        summaries_dir=summaries_dir,
+        log_dir=log_dir,
         recency_hours=int(os.getenv("RECENCY_HOURS", "72")),
         min_relevance_score=int(os.getenv("MIN_RELEVANCE_SCORE", "40")),
         max_articles_to_score=int(os.getenv("MAX_ARTICLES_TO_SCORE", "25")),
@@ -196,4 +238,22 @@ def get_settings() -> Settings:
             "USER_AGENT",
             "FinanceNewsTracker/0.1 (local research)",
         ),
+        run_timezone=os.getenv("RUN_TIMEZONE", "Asia/Hong_Kong"),
+        run_weekdays_only=_env_bool("RUN_WEEKDAYS_ONLY", True),
+        holiday_guard_enabled=_env_bool("HOLIDAY_GUARD_ENABLED", False),
+        report_retention_days=int(os.getenv("REPORT_RETENTION_DAYS", "90")),
+        log_level=os.getenv("LOG_LEVEL", "INFO"),
+        email_enabled=_env_bool("EMAIL_ENABLED", False),
+        smtp_host=os.getenv("SMTP_HOST", ""),
+        smtp_port=int(os.getenv("SMTP_PORT", "587")),
+        smtp_username=os.getenv("SMTP_USERNAME", ""),
+        smtp_password=os.getenv("SMTP_PASSWORD", ""),
+        smtp_use_tls=_env_bool("SMTP_USE_TLS", True),
+        smtp_use_ssl=_env_bool("SMTP_USE_SSL", False),
+        email_from=os.getenv("EMAIL_FROM", ""),
+        email_to=parse_email_recipients(os.getenv("EMAIL_TO", "")),
+        email_subject_prefix=os.getenv(
+            "EMAIL_SUBJECT_PREFIX", "[Finance News Tracker]"
+        ),
+        email_attach_docx=_env_bool("EMAIL_ATTACH_DOCX", True),
     )

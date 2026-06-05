@@ -1,0 +1,12 @@
+# Future holiday guard configuration (not used when HOLIDAY_GUARD_ENABLED=false).
+# Add dates in YYYY-MM-DD format to skip scheduled runs on company holidays.
+#
+# calendars:
+#   HK:
+#     - 2026-01-01
+#   JP:
+#     - 2026-01-01
+#   US:
+#     - 2026-01-01
+
+calendars: {}

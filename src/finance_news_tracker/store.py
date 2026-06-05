@@ -83,10 +83,29 @@ class Store:
                     body TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS run_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    trigger_type TEXT NOT NULL,
+                    markdown_path TEXT,
+                    docx_path TEXT,
+                    email_sent INTEGER DEFAULT 0,
+                    email_recipients TEXT,
+                    error_message TEXT,
+                    source_count INTEGER,
+                    story_count INTEGER,
+                    llm_model TEXT
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_articles_scored
                     ON articles(scored);
                 CREATE INDEX IF NOT EXISTS idx_scores_relevance
                     ON scores(relevance_score DESC);
+                CREATE INDEX IF NOT EXISTS idx_run_history_started
+                    ON run_history(started_at DESC);
                 """
             )
 
@@ -260,6 +279,68 @@ class Store:
                 (_utc_now_iso(), file_path, article_count, top_score, body),
             )
             return int(cur.lastrowid)
+
+    def create_run_history(
+        self,
+        *,
+        run_id: str,
+        trigger_type: str,
+        llm_model: str,
+    ) -> int:
+        """Insert a scheduled/manual run record at start; returns row id."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO run_history
+                    (run_id, started_at, status, trigger_type, llm_model)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, _utc_now_iso(), "running", trigger_type, llm_model),
+            )
+            return int(cur.lastrowid)
+
+    def finish_run_history(
+        self,
+        history_id: int,
+        *,
+        status: str,
+        markdown_path: str | None = None,
+        docx_path: str | None = None,
+        email_sent: bool = False,
+        email_recipients: str | None = None,
+        error_message: str | None = None,
+        source_count: int | None = None,
+        story_count: int | None = None,
+    ) -> None:
+        """Update run_history when a workflow completes or fails."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE run_history
+                SET finished_at = ?,
+                    status = ?,
+                    markdown_path = ?,
+                    docx_path = ?,
+                    email_sent = ?,
+                    email_recipients = ?,
+                    error_message = ?,
+                    source_count = ?,
+                    story_count = ?
+                WHERE id = ?
+                """,
+                (
+                    _utc_now_iso(),
+                    status,
+                    markdown_path,
+                    docx_path,
+                    1 if email_sent else 0,
+                    email_recipients,
+                    error_message,
+                    source_count,
+                    story_count,
+                    history_id,
+                ),
+            )
 
     def stats(self) -> dict[str, int]:
         with self._conn() as conn:

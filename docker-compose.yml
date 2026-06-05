@@ -1,0 +1,12 @@
+services:
+  tracker:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./summaries:/app/summaries
+      - ./logs:/app/logs
+    # One-shot job; override command per invocation.
+    # Production: docker compose run --rm tracker python -m finance_news_tracker run-scheduled
+    command: ["python", "-m", "finance_news_tracker", "run-once"]

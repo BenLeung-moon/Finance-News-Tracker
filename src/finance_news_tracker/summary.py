@@ -15,6 +15,7 @@ from finance_news_tracker.dedupe import (
     dedupe_scored_items,
     diversify_scored_items,
 )
+from finance_news_tracker.manifest import GeneratedReport, write_latest_report_manifest
 from finance_news_tracker.store import Store
 from finance_news_tracker.word_export import write_word_summary
 
@@ -257,7 +258,7 @@ def prepare_summary_items(
 def write_executive_summary(
     store: Store,
     settings: Settings,
-) -> Path | None:
+) -> GeneratedReport | None:
     items = store.get_top_scored(
         settings.min_relevance_score,
         limit=15,
@@ -302,10 +303,12 @@ def write_executive_summary(
     )
 
     settings.summaries_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"usdjpy_summary_{now.strftime('%Y%m%d_%H%M%S')}"
+    run_id = now.strftime("%Y%m%d_%H%M%S")
+    stem = f"usdjpy_summary_{run_id}"
     path = settings.summaries_dir / f"{stem}.md"
     path.write_text(body, encoding="utf-8")
 
+    docx_path: Path | None = None
     try:
         docx_path = write_word_summary(
             llm_summary,
@@ -325,5 +328,22 @@ def write_executive_summary(
         article_count=len(items),
         top_score=top_score,
     )
+    # Manifest records exact paths for send-latest-email; generation still does
+    # not send email (delivery is a separate adapter command).
+    write_latest_report_manifest(
+        settings,
+        run_id=run_id,
+        markdown_path=path,
+        docx_path=docx_path,
+        created_at=now,
+        summary_source_count=len(story_items),
+    )
     logger.info("Wrote executive summary to %s", path)
-    return path
+    return GeneratedReport(
+        run_id=run_id,
+        markdown_path=path,
+        docx_path=docx_path,
+        created_at=now,
+        story_count=len(story_items),
+        article_count=len(items),
+    )

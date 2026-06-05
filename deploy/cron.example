@@ -1,0 +1,19 @@
+# Finance News Tracker — Linux cron examples
+# Install under crontab -e on the server host (not inside the container).
+#
+# CRON_TZ makes 10:00 mean Hong Kong company time even if the server uses UTC.
+# Application-level RUN_WEEKDAYS_ONLY provides a second guard inside run-scheduled.
+
+CRON_TZ=Asia/Hong_Kong
+
+# --- Production (recommended): weekday guard + lock + generate + optional email ---
+0 10 * * 1-5 cd /opt/finance-news-tracker && flock -n /tmp/finance-news-tracker.lock docker compose run --rm tracker python -m finance_news_tracker run-scheduled >> logs/cron.log 2>&1
+
+# --- Generate only (no email) ---
+# 0 10 * * 1-5 cd /opt/finance-news-tracker && flock -n /tmp/finance-news-tracker.lock docker compose run --rm tracker python -m finance_news_tracker run-once >> logs/cron.log 2>&1
+
+# --- Debug: explicit two-step chain ---
+# 0 10 * * 1-5 cd /opt/finance-news-tracker && docker compose run --rm tracker sh -lc "python -m finance_news_tracker run-once && python -m finance_news_tracker send-latest-email" >> logs/cron.log 2>&1
+
+# --- SMTP test (run manually once before enabling cron) ---
+# cd /opt/finance-news-tracker && docker compose run --rm tracker python -m finance_news_tracker test-email

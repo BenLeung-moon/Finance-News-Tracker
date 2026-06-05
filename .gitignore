@@ -10,6 +10,7 @@ build/
 .pytest_cache/
 *.db
 data/
+logs/
 summaries/*.md
 !summaries/.gitkeep
 summaries/*.docx
