@@ -17,6 +17,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
+from finance_news_tracker.sources import source_label
+
 GREY = RGBColor(0x66, 0x66, 0x66)
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
@@ -29,25 +31,8 @@ _DIRECTION = {
     "usd_jpy_bearish": "Bearish USD/JPY",
 }
 
-_SOURCE_LABELS = {
-    "boj_whatsnew": "Bank of Japan",
-    "boj_statistics": "BOJ Statistics",
-    "nikkei_asia": "Nikkei Asia",
-    "nhk_world": "NHK WORLD-JAPAN",
-    "fed_press_monetary": "Federal Reserve (Monetary Policy)",
-    "fed_speeches": "Federal Reserve (Speeches)",
-    "us_treasury_press": "US Treasury",
-    "fxstreet_news": "FXStreet",
-    "investing_forex": "Investing.com (Forex)",
-}
-
-
 def _direction(value: str) -> str:
     return _DIRECTION.get(value, value)
-
-
-def _source_label(source_id: str) -> str:
-    return _SOURCE_LABELS.get(source_id, source_id)
 
 
 def _to_hk(value: datetime) -> datetime:
@@ -191,7 +176,7 @@ def write_word_summary(
         head = p.add_run(f"{i}. {item['title']}")
         head.bold = True
         tag = p.add_run(
-            f"  ({_source_label(item['source'])} · "
+            f"  ({source_label(item['source'])} · "
             f"{_direction(item['likely_usdjpy_direction'])} · "
             f"Relevance {_relevance_label(item.get('relevance_score'))})"
         )
@@ -226,7 +211,7 @@ def write_word_summary(
         p = doc.add_paragraph(style="List Bullet")
         _tight(p, after=3)
         _add_hyperlink(p, item["url"], item["title"], size=9)
-        tail = p.add_run(f"  — {_source_label(item['source'])}, {_display_date(item)}")
+        tail = p.add_run(f"  — {source_label(item['source'])}, {_display_date(item)}")
         tail.font.size = Pt(8)
         tail.font.color.rgb = GREY
 

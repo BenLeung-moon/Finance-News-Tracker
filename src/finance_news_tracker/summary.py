@@ -8,13 +8,10 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import httpx
-
+from finance_news_tracker.checker import select_summary_items
+from finance_news_tracker.llm_client import chat_completion
 from finance_news_tracker.config import Settings
-from finance_news_tracker.dedupe import (
-    dedupe_scored_items,
-    diversify_scored_items,
-)
+from finance_news_tracker.sources import source_label
 from finance_news_tracker.store import Store
 from finance_news_tracker.word_export import write_word_summary
 
@@ -62,21 +59,6 @@ def _format_direction(direction: str) -> str:
     return mapping.get(direction, direction)
 
 
-def _source_label(source_id: str) -> str:
-    labels = {
-        "boj_whatsnew": "Bank of Japan",
-        "boj_statistics": "BOJ Statistics",
-        "nikkei_asia": "Nikkei Asia",
-        "nhk_world": "NHK WORLD-JAPAN",
-        "fed_press_monetary": "Federal Reserve (Monetary Policy)",
-        "fed_speeches": "Federal Reserve (Speeches)",
-        "us_treasury_press": "US Treasury",
-        "fxstreet_news": "FXStreet",
-        "investing_forex": "Investing.com (Forex)",
-    }
-    return labels.get(source_id, source_id)
-
-
 def _to_hk(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -115,7 +97,7 @@ def _build_summary_prompt(items: list[dict[str, Any]]) -> str:
     for item in items[:12]:
         lines.append(
             f"- [{item['relevance_score']}] {item['title']} "
-            f"({_source_label(item['source'])})\n"
+            f"({source_label(item['source'])})\n"
             f"  URL: {item['url']}\n"
             f"  Channel: {item.get('fx_channel', 'n/a')} | "
             f"Direction: {item.get('likely_usdjpy_direction', 'n/a')} | "
@@ -133,7 +115,6 @@ def generate_executive_summary_llm(
     if not settings.deepseek_api_key:
         raise ValueError("DEEPSEEK_API_KEY is not set.")
 
-    url = f"{settings.deepseek_base_url.rstrip('/')}/chat/completions"
     payload = {
         "model": settings.deepseek_model,
         "temperature": 0.3,
@@ -143,15 +124,11 @@ def generate_executive_summary_llm(
         ],
         "response_format": {"type": "json_object"},
     }
-    headers = {
-        "Authorization": f"Bearer {settings.deepseek_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    data = chat_completion(
+        base_url=settings.deepseek_base_url,
+        api_key=settings.deepseek_api_key,
+        payload=payload,
+    )
 
     content = data["choices"][0]["message"].get("content") or ""
     if not content.strip():
@@ -207,7 +184,7 @@ def render_markdown(
         takeaway = item.get("why_it_matters") or item.get("summary", "")
         lines.append(f"### {i}. {item['title']}")
         lines.append(
-            f"- **Source:** {_source_label(item['source'])} | "
+            f"- **Source:** {source_label(item['source'])} | "
             f"**Direction:** {_format_direction(item['likely_usdjpy_direction'])} | "
             f"**Relevance:** {_relevance_label(item.get('relevance_score'))}"
         )
@@ -224,10 +201,10 @@ def render_markdown(
         lines.append("- Watch US data (CPI, payrolls) for rate differential moves")
 
     lines.extend(["", "## Source Citations", ""])
-    for item in citations[:10]:
+    for item in citations[:15]:
         lines.append(
             f"- [{item['title']}]({item['url']}) — "
-            f"{_source_label(item['source'])}, {_display_date(item)}"
+            f"{source_label(item['source'])}, {_display_date(item)}"
         )
 
     lines.append("")
@@ -240,18 +217,8 @@ def prepare_summary_items(
     items: list[dict[str, Any]],
     settings: Settings,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return (story_items, citation_items): diverse top stories, broader deduped citations."""
-    threshold = settings.dedupe_similarity_threshold
-    story_items = diversify_scored_items(
-        items,
-        max_items=12,
-        max_per_source=settings.summary_max_per_source,
-        threshold=threshold,
-    )
-    if not story_items:
-        story_items = dedupe_scored_items(items, threshold, max_items=12)
-    citation_items = dedupe_scored_items(items, threshold, max_items=15)
-    return story_items, citation_items
+    """Return (story_items, citation_items) via checker category quotas and dedupe."""
+    return select_summary_items(items, settings)
 
 
 def write_executive_summary(
@@ -260,7 +227,7 @@ def write_executive_summary(
 ) -> Path | None:
     items = store.get_top_scored(
         settings.min_relevance_score,
-        limit=15,
+        limit=settings.summary_candidate_pool_limit,
         recency_hours=settings.recency_hours,
     )
     if not items:

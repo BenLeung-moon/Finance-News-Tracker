@@ -160,6 +160,14 @@ class Settings:
     fx_media_score_limit_combined: int = 5
     dedupe_similarity_threshold: float = 0.82
     summary_max_per_source: int = 2
+    # Checker: wider candidate pool + category quotas for final selection
+    summary_candidate_pool_limit: int = 50
+    summary_max_stories: int = 7
+    summary_max_citations: int = 15
+    checker_official_min: int = 2
+    checker_intl_media_max_stories: int = 2
+    checker_local_media_max_stories: int = 3
+    checker_intl_media_max_citations: int = 3
 
     @property
     def db_path(self) -> Path:
@@ -191,6 +199,21 @@ def get_settings() -> Settings:
             os.getenv("DEDUPE_SIMILARITY_THRESHOLD", "0.82")
         ),
         summary_max_per_source=int(os.getenv("SUMMARY_MAX_PER_SOURCE", "2")),
+        summary_candidate_pool_limit=int(
+            os.getenv("SUMMARY_CANDIDATE_POOL_LIMIT", "50")
+        ),
+        summary_max_stories=int(os.getenv("SUMMARY_MAX_STORIES", "7")),
+        summary_max_citations=int(os.getenv("SUMMARY_MAX_CITATIONS", "15")),
+        checker_official_min=int(os.getenv("CHECKER_OFFICIAL_MIN", "2")),
+        checker_intl_media_max_stories=int(
+            os.getenv("CHECKER_INTL_MEDIA_MAX_STORIES", "2")
+        ),
+        checker_local_media_max_stories=int(
+            os.getenv("CHECKER_LOCAL_MEDIA_MAX_STORIES", "3")
+        ),
+        checker_intl_media_max_citations=int(
+            os.getenv("CHECKER_INTL_MEDIA_MAX_CITATIONS", "3")
+        ),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30")),
         user_agent=os.getenv(
             "USER_AGENT",

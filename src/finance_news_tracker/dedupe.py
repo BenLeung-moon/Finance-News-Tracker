@@ -8,9 +8,11 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from finance_news_tracker.models import Article
-
-# FXStreet / Investing.com — high-volume, repetitive feeds
-FX_MEDIA_SOURCES: frozenset[str] = frozenset({"fxstreet_news", "investing_forex"})
+from finance_news_tracker.sources import (
+    INTERNATIONAL_MEDIA_SOURCES as FX_MEDIA_SOURCES,
+    authority_rank,
+    is_fx_media_source,
+)
 
 _BOILERPLATE = re.compile(
     r"\b(breaking|update|live|analysis|forex|fx)\b",
@@ -19,21 +21,9 @@ _BOILERPLATE = re.compile(
 _NON_ALNUM = re.compile(r"[^a-z0-9\s]+")
 
 
-def is_fx_media_source(source: str) -> bool:
-    return source in FX_MEDIA_SOURCES
-
-
 def official_source_priority(source: str) -> int:
     """Higher = prefer keeping this item when stories are near-duplicates."""
-    if source.startswith("boj") or source.startswith("fed_"):
-        return 4
-    if source.startswith("us_treasury_"):
-        return 4
-    if source in ("nikkei_asia", "nhk_world"):
-        return 3
-    if is_fx_media_source(source):
-        return 1
-    return 2
+    return authority_rank(source)
 
 
 def article_text_blob(article: Article) -> str:

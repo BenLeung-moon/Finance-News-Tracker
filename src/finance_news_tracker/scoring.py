@@ -6,9 +6,8 @@ import re
 import time
 from typing import Any
 
-import httpx
-
 from finance_news_tracker.config import Settings
+from finance_news_tracker.llm_client import chat_completion
 from finance_news_tracker.models import Article, ScoreResult
 
 logger = logging.getLogger(__name__)
@@ -79,7 +78,6 @@ def score_article(
             "DEEPSEEK_API_KEY is not set. Copy .env.example to .env and add your key."
         )
 
-    url = f"{settings.deepseek_base_url.rstrip('/')}/chat/completions"
     payload = {
         "model": settings.deepseek_model,
         "temperature": 0.2,
@@ -89,15 +87,11 @@ def score_article(
         ],
         "response_format": {"type": "json_object"},
     }
-    headers = {
-        "Authorization": f"Bearer {settings.deepseek_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    data = chat_completion(
+        base_url=settings.deepseek_base_url,
+        api_key=settings.deepseek_api_key,
+        payload=payload,
+    )
 
     content = data["choices"][0]["message"]["content"]
     parsed = _extract_json(content)
