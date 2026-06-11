@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
-import re
 import time
-from typing import Any
-
-import httpx
 
 from finance_news_tracker.config import Settings
+from finance_news_tracker.llm import LlmConfig, complete_json
 from finance_news_tracker.models import Article, ScoreResult
 
 logger = logging.getLogger(__name__)
@@ -39,22 +35,6 @@ Scoring guide:
 """
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    text = (text or "").strip()
-    if not text:
-        raise ValueError("Empty model response")
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", text)
-        if match:
-            return json.loads(match.group(0))
-        raise
-
-
 def _build_user_prompt(article: Article) -> str:
     published = (
         article.published_at.isoformat() if article.published_at else "unknown"
@@ -73,34 +53,18 @@ def score_article(
     article: Article,
     article_id: int,
     settings: Settings,
+    *,
+    llm_config: LlmConfig | None = None,
 ) -> ScoreResult:
-    if not settings.deepseek_api_key:
-        raise ValueError(
-            "DEEPSEEK_API_KEY is not set. Copy .env.example to .env and add your key."
-        )
-
-    url = f"{settings.deepseek_base_url.rstrip('/')}/chat/completions"
-    payload = {
-        "model": settings.deepseek_model,
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": SCORING_SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_prompt(article)},
-        ],
-        "response_format": {"type": "json_object"},
-    }
-    headers = {
-        "Authorization": f"Bearer {settings.deepseek_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-
-    content = data["choices"][0]["message"]["content"]
-    parsed = _extract_json(content)
+    config = llm_config or settings.resolve_llm_config()
+    parsed, content = complete_json(
+        config,
+        system_prompt=SCORING_SYSTEM_PROMPT,
+        user_prompt=_build_user_prompt(article),
+        temperature=0.2,
+        max_tokens=1000,
+        timeout_seconds=120.0,
+    )
 
     return ScoreResult(
         article_id=article_id,
@@ -115,6 +79,8 @@ def score_article(
         source_citation=str(
             parsed.get("source_citation", f"{article.title} ({article.source})")
         ),
+        provider=config.provider,
+        model=config.model,
         model_raw=content,
     )
 
@@ -123,16 +89,22 @@ def score_articles_batch(
     items: list[tuple[Article, int]],
     settings: Settings,
     delay_seconds: float = 0.5,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> list[ScoreResult]:
+    config = settings.resolve_llm_config(provider, model)
     results: list[ScoreResult] = []
     for i, (article, article_id) in enumerate(items):
         try:
-            result = score_article(article, article_id, settings)
+            result = score_article(article, article_id, settings, llm_config=config)
             results.append(result)
             logger.info(
-                "Scored [%d/%d] %s -> %d",
+                "Scored [%d/%d] %s/%s %s -> %d",
                 i + 1,
                 len(items),
+                config.provider,
+                config.model,
                 article.title[:60],
                 result.relevance_score,
             )

@@ -22,6 +22,8 @@ class GeneratedReport:
     created_at: datetime
     story_count: int
     article_count: int
+    provider: str = "deepseek"
+    model: str = "deepseek-chat"
 
 
 @dataclass
@@ -38,6 +40,8 @@ class ReportManifest:
     created_at: str
     timezone: str
     summary_source_count: int
+    provider: str = "deepseek"
+    model: str = "deepseek-chat"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReportManifest:
@@ -48,6 +52,8 @@ class ReportManifest:
             created_at=str(data["created_at"]),
             timezone=str(data.get("timezone", "Asia/Hong_Kong")),
             summary_source_count=int(data.get("summary_source_count", 0)),
+            provider=str(data.get("provider", "deepseek")),
+            model=str(data.get("model", "deepseek-chat")),
         )
 
 
@@ -59,6 +65,8 @@ def write_latest_report_manifest(
     docx_path: Path | None,
     created_at: datetime,
     summary_source_count: int,
+    provider: str = "deepseek",
+    model: str = "deepseek-chat",
 ) -> Path:
     """Record the exact artifacts from the current generation run."""
     manifest = ReportManifest(
@@ -68,6 +76,8 @@ def write_latest_report_manifest(
         created_at=created_at.isoformat(),
         timezone=settings.run_timezone,
         summary_source_count=summary_source_count,
+        provider=provider,
+        model=model,
     )
     path = settings.latest_report_manifest_path
     path.parent.mkdir(parents=True, exist_ok=True)

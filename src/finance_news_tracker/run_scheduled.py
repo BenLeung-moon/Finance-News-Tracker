@@ -11,7 +11,7 @@ from finance_news_tracker.manifest import (
     GeneratedReport,
     read_latest_report_manifest,
 )
-from finance_news_tracker.pipeline import run_once
+from finance_news_tracker.pipeline import run_collect, run_once
 from finance_news_tracker.scheduling import acquire_run_lock, should_run_scheduled
 from finance_news_tracker.store import get_store
 
@@ -98,7 +98,7 @@ def run_scheduled_workflow(settings: Settings | None = None) -> GeneratedReport 
     history_id = store.create_run_history(
         run_id=run_id,
         trigger_type="scheduled",
-        llm_model=settings.deepseek_model,
+        llm_model=settings.resolve_llm_config().model,
     )
 
     try:
@@ -134,6 +134,51 @@ def run_scheduled_workflow(settings: Settings | None = None) -> GeneratedReport 
             return report
     except Exception as exc:
         logger.exception("Scheduled run failed")
+        store.finish_run_history(
+            history_id,
+            status="failed",
+            error_message=str(exc),
+        )
+        raise
+
+
+def run_collect_scheduled_workflow(
+    settings: Settings | None = None,
+) -> dict[str, int] | None:
+    """Scheduled collection-only workflow with no LLM or email work.
+
+    中文注解：用于低成本定时采集，只更新语料库，不触发评分、总结或邮件。
+    """
+    settings = settings or get_settings()
+    store = get_store(settings)
+    run_id = datetime.now(ZoneInfo(settings.run_timezone)).strftime("%Y%m%d_%H%M%S")
+
+    if not should_run_scheduled(settings):
+        logger.info(
+            "Skipping scheduled collection: not a valid run day in %s",
+            settings.run_timezone,
+        )
+        return None
+
+    history_id = store.create_run_history(
+        run_id=run_id,
+        trigger_type="collect-scheduled",
+        llm_model="collect-only",
+    )
+
+    try:
+        with acquire_run_lock(settings.run_lock_path):
+            stats = run_collect()
+            cleanup_old_reports(settings)
+            store.finish_run_history(
+                history_id,
+                status="success",
+                source_count=stats.get("articles"),
+                story_count=stats.get("new_this_run"),
+            )
+            return stats
+    except Exception as exc:
+        logger.exception("Scheduled collection failed")
         store.finish_run_history(
             history_id,
             status="failed",

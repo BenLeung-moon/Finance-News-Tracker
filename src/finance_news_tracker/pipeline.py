@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from finance_news_tracker.collectors import collect_all
 from finance_news_tracker.config import get_settings
@@ -11,6 +12,17 @@ from finance_news_tracker.store import get_store
 from finance_news_tracker.summary import write_executive_summary
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProviderScoreSummary:
+    provider: str
+    model: str
+    attempted: int
+    scored: int
+    skipped: int
+    failed: int
+    dry_run: bool
 
 
 def run_collect() -> dict[str, int]:
@@ -29,29 +41,135 @@ def run_collect() -> dict[str, int]:
     return stats
 
 
-def run_score() -> int:
+def run_score(
+    provider: str | None = None,
+    model: str | None = None,
+    *,
+    dry_run: bool = False,
+    frozen_items: list[tuple] | None = None,
+) -> int:
     settings = get_settings()
     store = get_store(settings)
-    unscored = store.get_unscored_articles()
+    llm_config = settings.resolve_llm_config(provider, model)
+    unscored = (
+        frozen_items
+        if frozen_items is not None
+        else store.get_unscored_for(llm_config.provider, llm_config.model)
+    )
     if not unscored:
-        logger.info("No unscored articles.")
+        logger.info("No unscored articles for %s/%s.", llm_config.provider, llm_config.model)
         return 0
 
-    to_score = rank_for_scoring(unscored, settings)
+    to_score = list(unscored) if frozen_items is not None else rank_for_scoring(unscored, settings)
     if not to_score:
         logger.info("No articles passed ranking for scoring.")
         return 0
 
-    results = score_articles_batch(to_score, settings)
+    already_scored = store.get_scored_article_ids_for(llm_config.provider, llm_config.model)
+    to_score = [(article, article_id) for article, article_id in to_score if article_id not in already_scored]
+    if dry_run:
+        logger.info(
+            "Dry run: would score %d article(s) for %s/%s.",
+            len(to_score),
+            llm_config.provider,
+            llm_config.model,
+        )
+        return len(to_score)
+
+    results = score_articles_batch(
+        to_score,
+        settings,
+        provider=llm_config.provider,
+        model=llm_config.model,
+    )
     for result in results:
         store.save_score(result)
     return len(results)
 
 
-def run_summarize() -> GeneratedReport | None:
+def run_score_test_all(*, dry_run: bool = False) -> list[ProviderScoreSummary]:
     settings = get_settings()
     store = get_store(settings)
-    return write_executive_summary(store, settings)
+    corpus = store.get_all_articles_for_scoring()
+    frozen_items = rank_for_scoring(corpus, settings)
+    provider_order = ["deepseek", "openai", "anthropic"]
+    summaries: list[ProviderScoreSummary] = []
+
+    logger.warning(
+        "Benchmark scoring uses one frozen list of %d article(s). With %d providers, "
+        "this can plan up to %d scoring call(s).",
+        len(frozen_items),
+        len(provider_order),
+        len(frozen_items) * len(provider_order),
+    )
+
+    for provider_name in provider_order:
+        llm_config = settings.resolve_llm_config(provider_name)
+        already_scored = store.get_scored_article_ids_for(
+            llm_config.provider,
+            llm_config.model,
+        )
+        to_score = [
+            (article, article_id)
+            for article, article_id in frozen_items
+            if article_id not in already_scored
+        ]
+        skipped = len(frozen_items) - len(to_score)
+        if dry_run:
+            summaries.append(
+                ProviderScoreSummary(
+                    provider=llm_config.provider,
+                    model=llm_config.model,
+                    attempted=len(to_score),
+                    scored=0,
+                    skipped=skipped,
+                    failed=0,
+                    dry_run=True,
+                )
+            )
+            continue
+
+        results = score_articles_batch(
+            to_score,
+            settings,
+            provider=llm_config.provider,
+            model=llm_config.model,
+        )
+        for result in results:
+            store.save_score(result)
+        summaries.append(
+            ProviderScoreSummary(
+                provider=llm_config.provider,
+                model=llm_config.model,
+                attempted=len(to_score),
+                scored=len(results),
+                skipped=skipped,
+                failed=len(to_score) - len(results),
+                dry_run=False,
+            )
+        )
+    return summaries
+
+
+def run_summarize(
+    provider: str | None = None,
+    model: str | None = None,
+    *,
+    write_latest_manifest: bool | None = None,
+) -> GeneratedReport | None:
+    settings = get_settings()
+    store = get_store(settings)
+    explicit_provider = provider is not None or model is not None
+    should_write_manifest = (
+        not explicit_provider if write_latest_manifest is None else write_latest_manifest
+    )
+    return write_executive_summary(
+        store,
+        settings,
+        provider=provider,
+        model=model,
+        write_latest_manifest=should_write_manifest,
+    )
 
 
 def run_once() -> GeneratedReport | None:

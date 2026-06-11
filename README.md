@@ -1,6 +1,6 @@
 # Finance News Tracker
 
-USD/JPY news tracker that collects fresh items from **Japan** (BOJ, Nikkei Asia, NHK), **US official** (Federal Reserve, US Treasury), and **international FX media** (FXStreet, Investing.com), scores USD/JPY relevance with **DeepSeek API**, and writes an **executive summary** to `summaries/`.
+USD/JPY news tracker that collects fresh items from **Japan** (BOJ, Nikkei Asia, NHK), **US official** (Federal Reserve, US Treasury), and **international FX media** (FXStreet, Investing.com), scores USD/JPY relevance with configurable LLM providers (**DeepSeek**, **OpenAI**, or **Anthropic**), and writes an **executive summary** to `summaries/`.
 
 中文注解：核心 pipeline 负责生成报告；邮件发送和 Docker/cron 部署是独立适配层，便于后续功能分支演进。
 
@@ -8,9 +8,15 @@ USD/JPY news tracker that collects fresh items from **Japan** (BOJ, Nikkei Asia,
 
 | Command | Purpose |
 |---------|---------|
+| `collect` | Fetch news from all sources |
+| `score --provider deepseek\|openai\|anthropic` | Score missing articles for one provider/model |
+| `score --test-all` | Benchmark DeepSeek, OpenAI, and Anthropic sequentially over one frozen article set |
+| `summarize --provider deepseek\|openai\|anthropic` | Generate a provider-specific benchmark summary |
 | `run-once` | Collect → score → summarize (generation only, no email) |
+| `test-llm` | Validate LLM adapter/config wiring; calls the API only when a key is set |
 | `test-email` | Send a test SMTP message to all `EMAIL_TO` recipients |
 | `send-latest-email` | Send the manifest-backed latest report |
+| `collect-scheduled` | Weekday guarded collection only, no LLM cost |
 | `run-scheduled` | Production workflow: weekday guard, lock, generate, optional email |
 
 ## Sources
@@ -28,7 +34,7 @@ USD/JPY news tracker that collects fresh items from **Japan** (BOJ, Nikkei Asia,
 ## Requirements
 
 - Python 3.10+
-- DeepSeek API key ([platform.deepseek.com](https://platform.deepseek.com/))
+- LLM API key for real scoring/summarizing ([DeepSeek](https://platform.deepseek.com/), OpenAI, or Anthropic)
 - Docker (optional, for server deployment)
 
 ## Local Setup
@@ -39,7 +45,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
 copy .env.example .env
-# Edit .env and set DEEPSEEK_API_KEY
+# Edit .env and set LLM_PROVIDER plus the matching API key for real LLM calls
 ```
 
 ## Local Usage
@@ -50,16 +56,39 @@ python -m finance_news_tracker run-once
 
 # Step by step:
 python -m finance_news_tracker collect
-python -m finance_news_tracker score
-python -m finance_news_tracker summarize
+python -m finance_news_tracker score --provider deepseek
+python -m finance_news_tracker summarize --provider deepseek
+
+# Benchmark all providers over the same frozen article set:
+python -m finance_news_tracker score --test-all --dry-run
+python -m finance_news_tracker score --test-all
 ```
+
+中文注解：`--test-all --dry-run` 只统计计划调用量，不访问 LLM API；正式 `--test-all` 会按 DeepSeek → OpenAI → Anthropic 顺序执行。
 
 Output:
 
 - SQLite DB: `data/tracker.db`
 - Latest manifest: `summaries/latest_report.json`
-- Markdown summary: `summaries/usdjpy_summary_YYYYMMDD_HHMMSS.md`
-- Word summary: `summaries/usdjpy_summary_YYYYMMDD_HHMMSS.docx`
+- Markdown summary: `summaries/usdjpy_summary_YYYYMMDD_HHMMSS_provider_model.md`
+- Word summary: `summaries/usdjpy_summary_YYYYMMDD_HHMMSS_provider_model.docx`
+
+Provider-specific benchmark summaries do not overwrite `summaries/latest_report.json` by default. `send-latest-email` continues to use the production manifest only.
+
+## LLM Connectivity Self-Test
+
+Run a local adapter/config check before adding API keys:
+
+```powershell
+python -m finance_news_tracker test-llm --provider deepseek
+python -m finance_news_tracker test-llm --provider openai
+python -m finance_news_tracker test-llm --provider anthropic
+python -m finance_news_tracker test-llm --all
+```
+
+Without an API key, the command returns `status: dry_run`, `missing_api_key: true`, and `network_call: false`. 中文注解：无 key 时只验证 provider 配置、adapter 选择和请求 payload 构造，不代表外部服务真实可达。
+
+After setting the matching API key, the same command sends a minimal JSON request and reports status, latency, provider, model, and parsed response.
 
 ## Email Setup
 
@@ -112,14 +141,14 @@ Build and run:
 cd /opt/finance-news-tracker
 docker compose build
 docker compose run --rm tracker python -m finance_news_tracker test-email
-docker compose run --rm tracker python -m finance_news_tracker run-scheduled
+docker compose run --rm tracker python -m finance_news_tracker collect-scheduled
 ```
 
-Cron example (Hong Kong time, Monday–Friday 10:00):
+Low-cost cron example (Hong Kong time, Monday–Friday 10:00):
 
 ```cron
 CRON_TZ=Asia/Hong_Kong
-0 10 * * 1-5 cd /opt/finance-news-tracker && flock -n /tmp/finance-news-tracker.lock docker compose run --rm tracker python -m finance_news_tracker run-scheduled >> logs/cron.log 2>&1
+0 10 * * 1-5 cd /opt/finance-news-tracker && flock -n /tmp/finance-news-tracker.lock docker compose run --rm tracker python -m finance_news_tracker collect-scheduled >> logs/cron.log 2>&1
 ```
 
 See [`deploy/cron.example`](deploy/cron.example) for more examples.
@@ -133,14 +162,22 @@ See [`deploy/cron.example`](deploy/cron.example) for more examples.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEEPSEEK_API_KEY` | — | Required for score/summarize |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | Model name |
+| `LLM_PROVIDER` | `deepseek` | Active/default provider when no CLI provider is passed |
+| `DEEPSEEK_API_KEY` | — | Required for real DeepSeek calls |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek OpenAI-compatible base URL |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model name |
+| `OPENAI_API_KEY` | — | Required for real OpenAI calls |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL |
+| `OPENAI_MODEL` | `gpt-5.4-mini` | OpenAI model name |
+| `ANTHROPIC_API_KEY` | — | Required for real Anthropic calls |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/v1` | Anthropic base URL |
+| `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Anthropic model name |
 | `DATA_DIR` | `data` | SQLite and lock files |
 | `SUMMARIES_DIR` | `summaries` | Report output directory |
 | `LOG_DIR` | `logs` | Daily log files |
 | `RECENCY_HOURS` | `72` | Only keep items within this window |
 | `MIN_RELEVANCE_SCORE` | `40` | Minimum score for summary inclusion |
-| `MAX_ARTICLES_TO_SCORE` | `25` | Cap DeepSeek calls per run |
+| `MAX_ARTICLES_TO_SCORE` | `25` | Cap scoring calls per provider per run |
 | `RUN_TIMEZONE` | `Asia/Hong_Kong` | Timezone for scheduling guard |
 | `RUN_WEEKDAYS_ONLY` | `true` | Skip Saturday/Sunday in `run-scheduled` |
 | `HOLIDAY_GUARD_ENABLED` | `false` | Future holiday calendar support |
@@ -164,8 +201,8 @@ See [`deploy/cron.example`](deploy/cron.example) for more examples.
 BOJ / Nikkei / Fed / Treasury / FXStreet / Investing.com RSS + NHK HTML
   → HTML head backfill (date/excerpt the feed omitted, e.g. Nikkei)
   → RSS HTML stripped from descriptions where needed
-  → SQLite (dedupe) → keyword prefilter → DeepSeek score
-  → executive summary (Markdown + Word + latest_report.json)
+  → SQLite (dedupe) → keyword prefilter → provider/model score
+  → executive summary (Markdown + Word + production latest_report.json when enabled)
 ```
 
 Optional delivery layer (separate commands):

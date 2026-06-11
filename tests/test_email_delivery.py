@@ -14,9 +14,16 @@ from finance_news_tracker.email_delivery import (
 
 def _email_settings(tmp_path: Path) -> Settings:
     return Settings(
+        llm_provider="deepseek",
         deepseek_api_key="",
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-chat",
+        deepseek_base_url="https://api.deepseek.com/v1",
+        deepseek_model="deepseek-v4-flash",
+        openai_api_key="",
+        openai_base_url="https://api.openai.com/v1",
+        openai_model="gpt-5.4-mini",
+        anthropic_api_key="",
+        anthropic_base_url="https://api.anthropic.com/v1",
+        anthropic_model="claude-haiku-4-5-20251001",
         data_dir=tmp_path / "data",
         summaries_dir=tmp_path / "summaries",
         log_dir=tmp_path / "logs",

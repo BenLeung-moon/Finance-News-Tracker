@@ -28,8 +28,16 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 class Store:
-    def __init__(self, db_path: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        legacy_provider: str = "deepseek",
+        legacy_model: str = "deepseek-chat",
+    ):
         self.db_path = db_path
+        self.legacy_provider = legacy_provider
+        self.legacy_model = legacy_model
         self._init_db()
 
     @contextmanager
@@ -61,7 +69,9 @@ class Store:
 
                 CREATE TABLE IF NOT EXISTS scores (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    article_id INTEGER NOT NULL UNIQUE,
+                    article_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'deepseek',
+                    model TEXT NOT NULL DEFAULT 'deepseek-chat',
                     relevance_score INTEGER NOT NULL,
                     fx_channel TEXT,
                     likely_usdjpy_direction TEXT,
@@ -71,13 +81,16 @@ class Store:
                     source_citation TEXT,
                     model_raw TEXT,
                     scored_at TEXT NOT NULL,
-                    FOREIGN KEY (article_id) REFERENCES articles(id)
+                    FOREIGN KEY (article_id) REFERENCES articles(id),
+                    UNIQUE(article_id, provider, model)
                 );
 
                 CREATE TABLE IF NOT EXISTS summary_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     generated_at TEXT NOT NULL,
                     file_path TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'deepseek',
+                    model TEXT NOT NULL DEFAULT 'deepseek-chat',
                     article_count INTEGER,
                     top_score INTEGER,
                     body TEXT NOT NULL
@@ -107,6 +120,106 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_run_history_started
                     ON run_history(started_at DESC);
                 """
+            )
+            self._migrate_scores_if_needed(conn)
+            self._migrate_summary_runs_if_needed(conn)
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_scores_provider_model_relevance
+                    ON scores(provider, model, relevance_score DESC)
+                """
+            )
+
+    def _table_columns(self, conn: sqlite3.Connection, table: str) -> set[str]:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    def _has_real_db_backup(self) -> bool:
+        """Require a visible backup before rebuilding a real tracker DB.
+
+        中文注解：真实 `data/tracker.db` 重建前需要用户先备份，测试库不强制。
+        """
+        if self.db_path.name != "tracker.db":
+            return True
+        backup_patterns = [
+            f"{self.db_path.name}.bak*",
+            f"{self.db_path.stem}_backup*.db",
+            f"{self.db_path.stem}.backup*.db",
+        ]
+        return any(
+            candidate.exists()
+            for pattern in backup_patterns
+            for candidate in self.db_path.parent.glob(pattern)
+        )
+
+    def _migrate_scores_if_needed(self, conn: sqlite3.Connection) -> None:
+        columns = self._table_columns(conn, "scores")
+        if {"provider", "model"}.issubset(columns):
+            return
+
+        existing_count = conn.execute("SELECT COUNT(*) AS c FROM scores").fetchone()["c"]
+        if existing_count and not self._has_real_db_backup():
+            raise RuntimeError(
+                "scores table migration requires a data/tracker.db backup first. "
+                "Create a backup next to the DB before reopening the tracker."
+            )
+
+        conn.executescript(
+            """
+            CREATE TABLE scores_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                relevance_score INTEGER NOT NULL,
+                fx_channel TEXT,
+                likely_usdjpy_direction TEXT,
+                confidence TEXT,
+                summary TEXT,
+                why_it_matters TEXT,
+                source_citation TEXT,
+                model_raw TEXT,
+                scored_at TEXT NOT NULL,
+                FOREIGN KEY (article_id) REFERENCES articles(id),
+                UNIQUE(article_id, provider, model)
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO scores_new
+                (id, article_id, provider, model, relevance_score, fx_channel,
+                 likely_usdjpy_direction, confidence, summary, why_it_matters,
+                 source_citation, model_raw, scored_at)
+            SELECT id, article_id, ?, ?, relevance_score, fx_channel,
+                   likely_usdjpy_direction, confidence, summary, why_it_matters,
+                   source_citation, model_raw, scored_at
+            FROM scores
+            """,
+            (self.legacy_provider, self.legacy_model),
+        )
+        conn.executescript(
+            """
+            DROP TABLE scores;
+            ALTER TABLE scores_new RENAME TO scores;
+            CREATE INDEX IF NOT EXISTS idx_scores_relevance
+                ON scores(relevance_score DESC);
+            CREATE INDEX IF NOT EXISTS idx_scores_provider_model_relevance
+                ON scores(provider, model, relevance_score DESC);
+            """
+        )
+
+    def _migrate_summary_runs_if_needed(self, conn: sqlite3.Connection) -> None:
+        columns = self._table_columns(conn, "summary_runs")
+        if "provider" not in columns:
+            provider = self.legacy_provider.replace("'", "''")
+            conn.execute(
+                f"ALTER TABLE summary_runs ADD COLUMN provider TEXT NOT NULL DEFAULT '{provider}'"
+            )
+        if "model" not in columns:
+            model = self.legacy_model.replace("'", "''")
+            conn.execute(
+                f"ALTER TABLE summary_runs ADD COLUMN model TEXT NOT NULL DEFAULT '{model}'"
             )
 
     def upsert_article(self, article: Article) -> tuple[int, bool]:
@@ -173,18 +286,89 @@ class Store:
             result.append((article, int(row["id"])))
         return result
 
+    def get_all_articles_for_scoring(self) -> list[tuple[Article, int]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, source, title, url, published_at, summary,
+                       content_hash, raw_excerpt
+                FROM articles
+                ORDER BY published_at DESC, collected_at DESC
+                """
+            ).fetchall()
+        return self._rows_to_articles(rows)
+
+    def get_unscored_for(self, provider: str, model: str) -> list[tuple[Article, int]]:
+        if not provider or not model:
+            raise ValueError("provider and model are required for provider-aware scoring")
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT a.id, a.source, a.title, a.url, a.published_at, a.summary,
+                       a.content_hash, a.raw_excerpt
+                FROM articles a
+                LEFT JOIN scores s
+                    ON s.article_id = a.id
+                   AND s.provider = ?
+                   AND s.model = ?
+                WHERE s.id IS NULL
+                ORDER BY a.published_at DESC, a.collected_at DESC
+                """,
+                (provider, model),
+            ).fetchall()
+        return self._rows_to_articles(rows)
+
+    def get_scored_article_ids_for(self, provider: str, model: str) -> set[int]:
+        if not provider or not model:
+            raise ValueError("provider and model are required for provider-aware scoring")
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT article_id FROM scores WHERE provider = ? AND model = ?",
+                (provider, model),
+            ).fetchall()
+        return {int(row["article_id"]) for row in rows}
+
+    def _rows_to_articles(self, rows: list[sqlite3.Row]) -> list[tuple[Article, int]]:
+        result: list[tuple[Article, int]] = []
+        for row in rows:
+            article = Article(
+                source=row["source"],
+                title=row["title"],
+                url=row["url"],
+                published_at=_parse_dt(row["published_at"]),
+                summary=row["summary"] or "",
+                content_hash=row["content_hash"],
+                raw_excerpt=row["raw_excerpt"] or "",
+            )
+            result.append((article, int(row["id"])))
+        return result
+
     def save_score(self, score: ScoreResult) -> None:
+        if not score.provider or not score.model:
+            raise ValueError("score.provider and score.model are required")
         with self._conn() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO scores
-                    (article_id, relevance_score, fx_channel,
+                INSERT INTO scores
+                    (article_id, provider, model, relevance_score, fx_channel,
                      likely_usdjpy_direction, confidence, summary,
                      why_it_matters, source_citation, model_raw, scored_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(article_id, provider, model) DO UPDATE SET
+                    relevance_score = excluded.relevance_score,
+                    fx_channel = excluded.fx_channel,
+                    likely_usdjpy_direction = excluded.likely_usdjpy_direction,
+                    confidence = excluded.confidence,
+                    summary = excluded.summary,
+                    why_it_matters = excluded.why_it_matters,
+                    source_citation = excluded.source_citation,
+                    model_raw = excluded.model_raw,
+                    scored_at = excluded.scored_at
                 """,
                 (
                     score.article_id,
+                    score.provider,
+                    score.model,
                     score.relevance_score,
                     score.fx_channel,
                     score.likely_usdjpy_direction,
@@ -196,23 +380,24 @@ class Store:
                     _utc_now_iso(),
                 ),
             )
-            conn.execute(
-                "UPDATE articles SET scored = 1 WHERE id = ?",
-                (score.article_id,),
-            )
 
     def get_top_scored(
         self,
         min_relevance: int,
         limit: int = 15,
         recency_hours: int | None = None,
+        *,
+        provider: str,
+        model: str,
     ) -> list[dict[str, Any]]:
+        if not provider or not model:
+            raise ValueError("provider and model are required for summary reads")
         # Effective timestamp = published_at, falling back to collected_at for
         # undated items. Ordering and the recency window both use it so the
         # summary surfaces *recent* high-scored news, not the all-time top score.
         ts = "COALESCE(a.published_at, a.collected_at)"
-        where = ["s.relevance_score >= ?"]
-        params: list[Any] = [min_relevance]
+        where = ["s.provider = ?", "s.model = ?", "s.relevance_score >= ?"]
+        params: list[Any] = [provider, model, min_relevance]
         if recency_hours is not None:
             where.append(f"{ts} >= ?")
             params.append(_cutoff_iso(recency_hours))
@@ -221,7 +406,8 @@ class Store:
             rows = conn.execute(
                 f"""
                 SELECT a.id, a.source, a.title, a.url, a.published_at, a.collected_at,
-                       s.relevance_score, s.fx_channel, s.likely_usdjpy_direction,
+                       s.provider, s.model, s.relevance_score, s.fx_channel,
+                       s.likely_usdjpy_direction,
                        s.confidence, s.summary, s.why_it_matters, s.source_citation
                 FROM scores s
                 JOIN articles a ON a.id = s.article_id
@@ -237,10 +423,15 @@ class Store:
         self,
         limit: int = 50,
         recency_hours: int | None = None,
+        *,
+        provider: str,
+        model: str,
     ) -> list[dict[str, Any]]:
+        if not provider or not model:
+            raise ValueError("provider and model are required for summary reads")
         ts = "COALESCE(a.published_at, a.collected_at)"
-        where = []
-        params: list[Any] = []
+        where = ["s.provider = ?", "s.model = ?"]
+        params: list[Any] = [provider, model]
         if recency_hours is not None:
             where.append(f"{ts} >= ?")
             params.append(_cutoff_iso(recency_hours))
@@ -250,7 +441,8 @@ class Store:
             rows = conn.execute(
                 f"""
                 SELECT a.id, a.source, a.title, a.url, a.published_at, a.collected_at,
-                       s.relevance_score, s.fx_channel, s.likely_usdjpy_direction,
+                       s.provider, s.model, s.relevance_score, s.fx_channel,
+                       s.likely_usdjpy_direction,
                        s.confidence, s.summary, s.why_it_matters, s.source_citation
                 FROM scores s
                 JOIN articles a ON a.id = s.article_id
@@ -268,15 +460,29 @@ class Store:
         body: str,
         article_count: int,
         top_score: int,
+        *,
+        provider: str,
+        model: str,
     ) -> int:
+        if not provider or not model:
+            raise ValueError("provider and model are required for summary runs")
         with self._conn() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO summary_runs
-                    (generated_at, file_path, article_count, top_score, body)
-                VALUES (?, ?, ?, ?, ?)
+                    (generated_at, file_path, provider, model, article_count,
+                     top_score, body)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (_utc_now_iso(), file_path, article_count, top_score, body),
+                (
+                    _utc_now_iso(),
+                    file_path,
+                    provider,
+                    model,
+                    article_count,
+                    top_score,
+                    body,
+                ),
             )
             return int(cur.lastrowid)
 
@@ -353,4 +559,8 @@ class Store:
 
 
 def get_store(settings: Settings) -> Store:
-    return Store(settings.db_path)
+    return Store(
+        settings.db_path,
+        legacy_provider="deepseek",
+        legacy_model=settings.deepseek_model,
+    )

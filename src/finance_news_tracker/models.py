@@ -26,7 +26,7 @@ class Article:
 
 @dataclass
 class ScoreResult:
-    """DeepSeek relevance scoring output."""
+    """Provider/model-specific relevance scoring output."""
 
     article_id: int
     relevance_score: int
@@ -36,6 +36,8 @@ class ScoreResult:
     summary: str
     why_it_matters: str
     source_citation: str
+    provider: str = "deepseek"
+    model: str = "deepseek-chat"
     model_raw: str = ""
 
     def to_dict(self) -> dict[str, Any]:

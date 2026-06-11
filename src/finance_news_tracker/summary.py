@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -8,13 +7,12 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import httpx
-
 from finance_news_tracker.config import Settings
 from finance_news_tracker.dedupe import (
     dedupe_scored_items,
     diversify_scored_items,
 )
+from finance_news_tracker.llm import LlmConfig, complete_json
 from finance_news_tracker.manifest import GeneratedReport, write_latest_report_manifest
 from finance_news_tracker.store import Store
 from finance_news_tracker.word_export import write_word_summary
@@ -35,20 +33,6 @@ Respond with ONLY valid JSON (no markdown fences):
   "watchlist": ["<upcoming event or risk 1>", "<event 2>", "..."]
 }
 """
-
-
-def _extract_json(text: str) -> dict[str, Any]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", text)
-        if match:
-            return json.loads(match.group(0))
-        raise
 
 
 def _format_direction(direction: str) -> str:
@@ -130,34 +114,19 @@ def _build_summary_prompt(items: list[dict[str, Any]]) -> str:
 def generate_executive_summary_llm(
     items: list[dict[str, Any]],
     settings: Settings,
+    *,
+    llm_config: LlmConfig | None = None,
 ) -> dict[str, Any]:
-    if not settings.deepseek_api_key:
-        raise ValueError("DEEPSEEK_API_KEY is not set.")
-
-    url = f"{settings.deepseek_base_url.rstrip('/')}/chat/completions"
-    payload = {
-        "model": settings.deepseek_model,
-        "temperature": 0.3,
-        "messages": [
-            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-            {"role": "user", "content": _build_summary_prompt(items)},
-        ],
-        "response_format": {"type": "json_object"},
-    }
-    headers = {
-        "Authorization": f"Bearer {settings.deepseek_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-
-    content = data["choices"][0]["message"].get("content") or ""
-    if not content.strip():
-        raise ValueError("DeepSeek returned empty summary content")
-    return _extract_json(content)
+    config = llm_config or settings.resolve_llm_config()
+    parsed, _content = complete_json(
+        config,
+        system_prompt=SUMMARY_SYSTEM_PROMPT,
+        user_prompt=_build_summary_prompt(items),
+        temperature=0.3,
+        max_tokens=1200,
+        timeout_seconds=120.0,
+    )
+    return parsed
 
 
 def _display_date(item: dict[str, Any]) -> str:
@@ -183,6 +152,8 @@ def render_markdown(
     items: list[dict[str, Any]],
     generated_at: datetime,
     *,
+    provider: str,
+    model: str,
     citation_items: list[dict[str, Any]] | None = None,
 ) -> str:
     citations = citation_items if citation_items is not None else items
@@ -193,6 +164,7 @@ def render_markdown(
         "# USD/JPY Executive Summary",
         "",
         f"**Generated:** {_format_generated_time(generated_at)}",
+        f"**LLM:** {provider} / {model}",
         "**Sources:** BOJ, Nikkei Asia, NHK, Federal Reserve, US Treasury, "
         "FXStreet, Investing.com",
         "",
@@ -255,19 +227,33 @@ def prepare_summary_items(
     return story_items, citation_items
 
 
+def _safe_filename_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
+    return safe.strip("-") or "unknown"
+
+
 def write_executive_summary(
     store: Store,
     settings: Settings,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    write_latest_manifest: bool = True,
 ) -> GeneratedReport | None:
+    llm_config = settings.resolve_llm_config(provider, model)
     items = store.get_top_scored(
         settings.min_relevance_score,
         limit=15,
         recency_hours=settings.recency_hours,
+        provider=llm_config.provider,
+        model=llm_config.model,
     )
     if not items:
         items = store.get_recently_scored_all(
             limit=10,
             recency_hours=settings.recency_hours,
+            provider=llm_config.provider,
+            model=llm_config.model,
         )
     if not items:
         logger.warning("No recent scored articles available for summary.")
@@ -277,7 +263,11 @@ def write_executive_summary(
 
     now = datetime.now(HK_TZ)
     try:
-        llm_summary = generate_executive_summary_llm(story_items, settings)
+        llm_summary = generate_executive_summary_llm(
+            story_items,
+            settings,
+            llm_config=llm_config,
+        )
     except Exception:
         logger.exception("LLM summary failed; using score-only fallback")
         # Top Stories are rendered from `items` regardless, so the fallback only
@@ -299,12 +289,16 @@ def write_executive_summary(
         llm_summary,
         story_items,
         now,
+        provider=llm_config.provider,
+        model=llm_config.model,
         citation_items=citation_items,
     )
 
     settings.summaries_dir.mkdir(parents=True, exist_ok=True)
     run_id = now.strftime("%Y%m%d_%H%M%S")
-    stem = f"usdjpy_summary_{run_id}"
+    provider_suffix = _safe_filename_part(llm_config.provider)
+    model_suffix = _safe_filename_part(llm_config.model)
+    stem = f"usdjpy_summary_{run_id}_{provider_suffix}_{model_suffix}"
     path = settings.summaries_dir / f"{stem}.md"
     path.write_text(body, encoding="utf-8")
 
@@ -327,17 +321,24 @@ def write_executive_summary(
         body=body,
         article_count=len(items),
         top_score=top_score,
+        provider=llm_config.provider,
+        model=llm_config.model,
     )
-    # Manifest records exact paths for send-latest-email; generation still does
-    # not send email (delivery is a separate adapter command).
-    write_latest_report_manifest(
-        settings,
-        run_id=run_id,
-        markdown_path=path,
-        docx_path=docx_path,
-        created_at=now,
-        summary_source_count=len(story_items),
-    )
+    if write_latest_manifest:
+        # Manifest records exact production paths for send-latest-email; benchmark
+        # summaries skip this to avoid polluting delivery state.
+        write_latest_report_manifest(
+            settings,
+            run_id=run_id,
+            markdown_path=path,
+            docx_path=docx_path,
+            created_at=now,
+            summary_source_count=len(story_items),
+            provider=llm_config.provider,
+            model=llm_config.model,
+        )
+    else:
+        logger.info("Skipped latest_report.json for benchmark summary %s", path)
     logger.info("Wrote executive summary to %s", path)
     return GeneratedReport(
         run_id=run_id,
@@ -346,4 +347,6 @@ def write_executive_summary(
         created_at=now,
         story_count=len(story_items),
         article_count=len(items),
+        provider=llm_config.provider,
+        model=llm_config.model,
     )
