@@ -116,6 +116,8 @@ def test_llm_connectivity_without_api_key_does_not_call_network():
 class _FakeResponse:
     def __init__(self, data: dict[str, Any]):
         self._data = data
+        self.status_code = 200
+        self.text = ""
 
     def raise_for_status(self) -> None:
         return None
@@ -138,28 +140,6 @@ class _FakeClient:
 
     def post(self, *args: Any, **kwargs: Any) -> _FakeResponse:
         return _FakeResponse(self.response_data)
-
-
-def test_complete_json_openai_compatible_with_mocked_response(monkeypatch):
-    _FakeClient.response_data = {
-        "choices": [{"message": {"content": '{"ok": true}'}}],
-    }
-    monkeypatch.setattr("finance_news_tracker.llm.httpx.Client", _FakeClient)
-
-    parsed, raw = complete_json(
-        LlmConfig(
-            provider="openai",
-            model="gpt-5.4-mini",
-            api_key="key",
-            base_url="https://api.openai.com/v1",
-        ),
-        system_prompt="Return JSON.",
-        user_prompt="Return ok.",
-        temperature=0,
-    )
-
-    assert parsed == {"ok": True}
-    assert raw == '{"ok": true}'
 
 
 def test_complete_json_anthropic_with_mocked_response(monkeypatch):

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from finance_news_tracker.config import get_settings
 from finance_news_tracker.email_delivery import send_test_email
-from finance_news_tracker.llm import test_llm_connectivity
+from finance_news_tracker.llm import test_provider_llm
 from finance_news_tracker.pipeline import (
     run_collect,
     run_once,
@@ -180,8 +180,10 @@ def main(argv: list[str] | None = None) -> None:
             if providers == [None]:
                 providers = [None]
             results = [
-                test_llm_connectivity(
-                    settings.resolve_llm_config(provider, args.model),
+                test_provider_llm(
+                    settings,
+                    provider,
+                    model=args.model,
                     timeout_seconds=settings.request_timeout_seconds,
                 )
                 for provider in providers
