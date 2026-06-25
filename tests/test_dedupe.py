@@ -13,16 +13,19 @@ from finance_news_tracker.prefilter import prefilter_article, rank_for_scoring
 
 
 def test_normalize_text_strips_boilerplate():
-    assert "forex" not in normalize_text("FOREX: USD/JPY rises on Fed remarks")
+    settings = get_settings()
+    assert "forex" not in normalize_text("FOREX: USD/JPY rises on Fed remarks", settings)
 
 
 def test_text_similarity_detects_near_duplicates():
+    settings = get_settings()
     a = "USD/JPY climbs as Fed signals higher for longer"
     b = "USD/JPY climbs as the Fed signals higher for longer"
-    assert text_similarity(a, b) >= 0.82
+    assert text_similarity(a, b, settings) >= 0.82
 
 
 def test_articles_similar_cross_source():
+    settings = get_settings()
     left = Article(
         source="fxstreet_news",
         title="USD/JPY rises after BOJ holds rates",
@@ -33,10 +36,11 @@ def test_articles_similar_cross_source():
         title="USD/JPY rises after BOJ holds rates",
         url="https://investing.com/1",
     )
-    assert articles_similar(left, right, 0.82)
+    assert articles_similar(left, right, 0.82, settings)
 
 
 def test_dedupe_keeps_official_over_media():
+    settings = get_settings()
     now = datetime.now(timezone.utc)
     fed = Article(
         source="fed_press_monetary",
@@ -51,7 +55,7 @@ def test_dedupe_keeps_official_over_media():
         published_at=now,
     )
     ranked = [(fx, 1, 5), (fed, 2, 8)]
-    out = dedupe_articles(ranked, 0.82)
+    out = dedupe_articles(ranked, 0.82, settings)
     sources = {a.source for a, _, _ in out}
     assert "fed_press_monetary" in sources
     assert len(out) == 1
@@ -85,7 +89,7 @@ def test_media_prefilter_accepts_direct_usdjpy():
 def test_rank_applies_media_source_quota():
     settings = get_settings()
     settings.max_articles_to_score = 10
-    settings.fx_media_score_limit_per_source = 2
+    settings.noisy_score_limit_per_source = 2
     now = datetime.now(timezone.utc)
     articles = []
     for i in range(5):
@@ -172,5 +176,6 @@ def test_diversify_scored_items_caps_per_source():
         max_items=12,
         max_per_source=2,
         threshold=settings.dedupe_similarity_threshold,
+        settings=settings,
     )
     assert len(diverse) == 2

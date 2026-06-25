@@ -73,8 +73,8 @@ class Store:
                     provider TEXT NOT NULL DEFAULT 'deepseek',
                     model TEXT NOT NULL DEFAULT 'deepseek-chat',
                     relevance_score INTEGER NOT NULL,
-                    fx_channel TEXT,
-                    likely_usdjpy_direction TEXT,
+                    category TEXT,
+                    signal TEXT,
                     confidence TEXT,
                     summary TEXT,
                     why_it_matters TEXT,
@@ -122,6 +122,7 @@ class Store:
                 """
             )
             self._migrate_scores_if_needed(conn)
+            self._migrate_score_columns_if_needed(conn)
             self._migrate_summary_runs_if_needed(conn)
             conn.execute(
                 """
@@ -172,8 +173,8 @@ class Store:
                 provider TEXT NOT NULL,
                 model TEXT NOT NULL,
                 relevance_score INTEGER NOT NULL,
-                fx_channel TEXT,
-                likely_usdjpy_direction TEXT,
+                category TEXT,
+                signal TEXT,
                 confidence TEXT,
                 summary TEXT,
                 why_it_matters TEXT,
@@ -188,8 +189,8 @@ class Store:
         conn.execute(
             """
             INSERT INTO scores_new
-                (id, article_id, provider, model, relevance_score, fx_channel,
-                 likely_usdjpy_direction, confidence, summary, why_it_matters,
+                (id, article_id, provider, model, relevance_score, category,
+                 signal, confidence, summary, why_it_matters,
                  source_citation, model_raw, scored_at)
             SELECT id, article_id, ?, ?, relevance_score, fx_channel,
                    likely_usdjpy_direction, confidence, summary, why_it_matters,
@@ -202,6 +203,82 @@ class Store:
             """
             DROP TABLE scores;
             ALTER TABLE scores_new RENAME TO scores;
+            CREATE INDEX IF NOT EXISTS idx_scores_relevance
+                ON scores(relevance_score DESC);
+            CREATE INDEX IF NOT EXISTS idx_scores_provider_model_relevance
+                ON scores(provider, model, relevance_score DESC);
+            """
+        )
+
+    def _migrate_score_columns_if_needed(self, conn: sqlite3.Connection) -> None:
+        """Rename fx_channel / likely_usdjpy_direction to neutral category / signal."""
+        columns = self._table_columns(conn, "scores")
+        if "category" in columns and "fx_channel" not in columns:
+            return
+        if "fx_channel" not in columns:
+            return
+
+        existing_count = conn.execute("SELECT COUNT(*) AS c FROM scores").fetchone()["c"]
+        if existing_count and not self._has_real_db_backup():
+            raise RuntimeError(
+                "scores column migration requires a data/tracker.db backup first. "
+                "Create a backup next to the DB before reopening the tracker."
+            )
+
+        conn.executescript(
+            """
+            CREATE TABLE scores_columns_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                relevance_score INTEGER NOT NULL,
+                category TEXT,
+                signal TEXT,
+                confidence TEXT,
+                summary TEXT,
+                why_it_matters TEXT,
+                source_citation TEXT,
+                model_raw TEXT,
+                scored_at TEXT NOT NULL,
+                FOREIGN KEY (article_id) REFERENCES articles(id),
+                UNIQUE(article_id, provider, model)
+            );
+            """
+        )
+        if "category" in columns:
+            conn.execute(
+                """
+                INSERT INTO scores_columns_new
+                    (id, article_id, provider, model, relevance_score, category,
+                     signal, confidence, summary, why_it_matters,
+                     source_citation, model_raw, scored_at)
+                SELECT id, article_id, provider, model, relevance_score,
+                       COALESCE(category, fx_channel),
+                       COALESCE(signal, likely_usdjpy_direction),
+                       confidence, summary, why_it_matters,
+                       source_citation, model_raw, scored_at
+                FROM scores
+                """
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO scores_columns_new
+                    (id, article_id, provider, model, relevance_score, category,
+                     signal, confidence, summary, why_it_matters,
+                     source_citation, model_raw, scored_at)
+                SELECT id, article_id, provider, model, relevance_score,
+                       fx_channel, likely_usdjpy_direction,
+                       confidence, summary, why_it_matters,
+                       source_citation, model_raw, scored_at
+                FROM scores
+                """
+            )
+        conn.executescript(
+            """
+            DROP TABLE scores;
+            ALTER TABLE scores_columns_new RENAME TO scores;
             CREATE INDEX IF NOT EXISTS idx_scores_relevance
                 ON scores(relevance_score DESC);
             CREATE INDEX IF NOT EXISTS idx_scores_provider_model_relevance
@@ -350,14 +427,14 @@ class Store:
             conn.execute(
                 """
                 INSERT INTO scores
-                    (article_id, provider, model, relevance_score, fx_channel,
-                     likely_usdjpy_direction, confidence, summary,
+                    (article_id, provider, model, relevance_score, category,
+                     signal, confidence, summary,
                      why_it_matters, source_citation, model_raw, scored_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(article_id, provider, model) DO UPDATE SET
                     relevance_score = excluded.relevance_score,
-                    fx_channel = excluded.fx_channel,
-                    likely_usdjpy_direction = excluded.likely_usdjpy_direction,
+                    category = excluded.category,
+                    signal = excluded.signal,
                     confidence = excluded.confidence,
                     summary = excluded.summary,
                     why_it_matters = excluded.why_it_matters,
@@ -370,8 +447,8 @@ class Store:
                     score.provider,
                     score.model,
                     score.relevance_score,
-                    score.fx_channel,
-                    score.likely_usdjpy_direction,
+                    score.category,
+                    score.signal,
                     score.confidence,
                     score.summary,
                     score.why_it_matters,
@@ -406,8 +483,8 @@ class Store:
             rows = conn.execute(
                 f"""
                 SELECT a.id, a.source, a.title, a.url, a.published_at, a.collected_at,
-                       s.provider, s.model, s.relevance_score, s.fx_channel,
-                       s.likely_usdjpy_direction,
+                       s.provider, s.model, s.relevance_score, s.category,
+                       s.signal,
                        s.confidence, s.summary, s.why_it_matters, s.source_citation
                 FROM scores s
                 JOIN articles a ON a.id = s.article_id
@@ -441,8 +518,8 @@ class Store:
             rows = conn.execute(
                 f"""
                 SELECT a.id, a.source, a.title, a.url, a.published_at, a.collected_at,
-                       s.provider, s.model, s.relevance_score, s.fx_channel,
-                       s.likely_usdjpy_direction,
+                       s.provider, s.model, s.relevance_score, s.category,
+                       s.signal,
                        s.confidence, s.summary, s.why_it_matters, s.source_citation
                 FROM scores s
                 JOIN articles a ON a.id = s.article_id

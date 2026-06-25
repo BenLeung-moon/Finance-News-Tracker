@@ -44,7 +44,7 @@ def _setup_logging(verbose: bool) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="USD/JPY finance news tracker with multi-LLM summaries",
+        description="Multi-profile finance news tracker with LLM summaries",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)

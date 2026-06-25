@@ -1,6 +1,12 @@
 # Finance News Tracker
 
-USD/JPY news tracker that collects fresh items from **Japan** (BOJ, Nikkei Asia, NHK), **US official** (Federal Reserve, US Treasury), and **international FX media** (FXStreet, Investing.com), scores USD/JPY relevance with configurable LLM providers (**DeepSeek**, **OpenAI**, or **Anthropic**), and writes an **executive summary** to `summaries/`.
+Multi-profile news tracker that collects fresh items from configurable sources, scores relevance with LLM providers (**DeepSeek**, **OpenAI**, or **Anthropic**), and writes an **executive summary** to `summaries/`.
+
+**Profiles:**
+- `usdjpy` (default) — USD/JPY finance news (BOJ, Nikkei Asia, NHK, Fed, US Treasury, FX media)
+- `jp_storage` — Japan energy storage ecosystem (ANRE, METI, OCCTO, trading companies, utilities, battery OEMs)
+
+Set `TRACKER_PROFILE=usdjpy` or `TRACKER_PROFILE=jp_storage` in `.env`.
 
 中文注解：核心 pipeline 负责生成报告；邮件发送和 Docker/cron 部署是独立适配层，便于后续功能分支演进。
 
@@ -20,15 +26,12 @@ USD/JPY news tracker that collects fresh items from **Japan** (BOJ, Nikkei Asia,
 
 ## Sources
 
-| Source | Method | URL |
-|--------|--------|-----|
-| Bank of Japan | Official English RSS | `boj.or.jp/en/rss/whatsnew.xml`, `statistics.xml` |
-| Nikkei | Nikkei Asia public RSS | `asia.nikkei.com/rss/feed/nar` |
-| NHK WORLD | Polite HTML list/tag pages | `nhkworld/en/news/...` |
-| Federal Reserve | Official RSS | `federalreserve.gov/feeds/press_monetary.xml`, `speeches.xml` |
-| US Treasury | HTML press list (RSS unavailable) | `home.treasury.gov/news/press-releases` |
-| FXStreet | Forex news RSS | `fxstreet.com/rss/news` |
-| Investing.com | Forex RSS | `investing.com/rss/forex.rss` |
+Sources are defined per profile in `src/finance_news_tracker/profiles/`.
+
+| Profile | Sources |
+|---------|---------|
+| `usdjpy` | BOJ, Nikkei Asia, NHK WORLD, Federal Reserve, US Treasury, FXStreet, Investing.com |
+| `jp_storage` | ANRE, METI, OCCTO, major trading companies, power utilities, storage/battery manufacturers (EN/JA only) |
 
 ## Requirements
 
@@ -77,8 +80,8 @@ Output:
 
 - SQLite DB: `data/tracker.db`
 - Latest manifest: `summaries/latest_report.json`
-- Markdown summary: `summaries/usdjpy_summary_YYYYMMDD_HHMMSS_provider_model.md`
-- Word summary: `summaries/usdjpy_summary_YYYYMMDD_HHMMSS_provider_model.docx`
+- Markdown summary: `summaries/<profile>_summary_YYYYMMDD_HHMMSS_provider_model.md`
+- Word summary: `summaries/<profile>_summary_YYYYMMDD_HHMMSS_provider_model.docx`
 
 Provider-specific summaries generated via `summarize --provider ...` do not overwrite `summaries/latest_report.json` unless `--write-latest-manifest` is set. `run-once` and `run-scheduled` always write the production manifest. `send-latest-email` continues to use the manifest only.
 

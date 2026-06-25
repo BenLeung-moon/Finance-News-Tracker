@@ -20,47 +20,6 @@ from finance_news_tracker.word_export import write_word_summary
 logger = logging.getLogger(__name__)
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
-SUMMARY_SYSTEM_PROMPT = """You are a senior FX strategist writing an executive summary for
-USD/JPY traders based on scored financial news (Japan, US policy, and international FX media).
-
-Write in clear English. Be concise and actionable. Do not claim statistical correlation;
-frame insights as narrative relevance and market transmission. The per-article relevance
-scores are provided to you as context; do not restate or invent numeric scores.
-
-Respond with ONLY valid JSON (no markdown fences):
-{
-  "market_read": "<one paragraph overall USD/JPY read>",
-  "watchlist": ["<upcoming event or risk 1>", "<event 2>", "..."]
-}
-"""
-
-
-def _format_direction(direction: str) -> str:
-    mapping = {
-        "usd_jpy_up": "USD/JPY ↑ (yen weaker)",
-        "usd_jpy_down": "USD/JPY ↓ (yen stronger)",
-        "mixed": "Mixed",
-        "unclear": "Unclear",
-        "usd_jpy_bullish": "Bullish USD/JPY",
-        "usd_jpy_bearish": "Bearish USD/JPY",
-    }
-    return mapping.get(direction, direction)
-
-
-def _source_label(source_id: str) -> str:
-    labels = {
-        "boj_whatsnew": "Bank of Japan",
-        "boj_statistics": "BOJ Statistics",
-        "nikkei_asia": "Nikkei Asia",
-        "nhk_world": "NHK WORLD-JAPAN",
-        "fed_press_monetary": "Federal Reserve (Monetary Policy)",
-        "fed_speeches": "Federal Reserve (Speeches)",
-        "us_treasury_press": "US Treasury",
-        "fxstreet_news": "FXStreet",
-        "investing_forex": "Investing.com (Forex)",
-    }
-    return labels.get(source_id, source_id)
-
 
 def _to_hk(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -95,18 +54,20 @@ def _relevance_label(score: Any) -> str:
     return "Low"
 
 
-def _build_summary_prompt(items: list[dict[str, Any]]) -> str:
+def _build_summary_prompt(items: list[dict[str, Any]], settings: Settings) -> str:
+    profile = settings.active_profile
+    labels = profile.report_labels
     lines = []
     for item in items[:12]:
         lines.append(
             f"- [{item['relevance_score']}] {item['title']} "
-            f"({_source_label(item['source'])})\n"
+            f"({profile.source_label(item['source'])})\n"
             f"  URL: {item['url']}\n"
-            f"  Channel: {item.get('fx_channel', 'n/a')} | "
-            f"Direction: {item.get('likely_usdjpy_direction', 'n/a')} | "
+            f"  {labels.category_label}: {item.get('category', 'n/a')} | "
+            f"{labels.signal_label}: {item.get('signal', 'n/a')} | "
             f"Confidence: {item.get('confidence', 'n/a')}\n"
             f"  Summary: {item.get('summary', '')}\n"
-            f"  Why USD/JPY: {item.get('why_it_matters', '')}"
+            f"  {labels.why_it_matters_label}: {item.get('why_it_matters', '')}"
         )
     return "Scored articles for executive summary:\n\n" + "\n\n".join(lines)
 
@@ -120,8 +81,8 @@ def generate_executive_summary_llm(
     config = llm_config or settings.resolve_llm_config()
     parsed, _content = complete_json(
         config,
-        system_prompt=SUMMARY_SYSTEM_PROMPT,
-        user_prompt=_build_summary_prompt(items),
+        system_prompt=settings.active_profile.summary_system_prompt,
+        user_prompt=_build_summary_prompt(items, settings),
         temperature=0.3,
         max_tokens=1200,
         timeout_seconds=120.0,
@@ -151,24 +112,27 @@ def render_markdown(
     llm_summary: dict[str, Any],
     items: list[dict[str, Any]],
     generated_at: datetime,
+    settings: Settings,
     *,
     provider: str,
     model: str,
     citation_items: list[dict[str, Any]] | None = None,
 ) -> str:
+    profile = settings.active_profile
+    labels = profile.report_labels
     citations = citation_items if citation_items is not None else items
     watchlist = llm_summary.get("watchlist") or []
     market_read = llm_summary.get("market_read", "")
 
     lines = [
-        "# USD/JPY Executive Summary",
+        f"# {labels.report_title}",
         "",
         f"**Generated:** {_format_generated_time(generated_at)}",
         f"**LLM:** {provider} / {model}",
-        "**Sources:** BOJ, Nikkei Asia, NHK, Federal Reserve, US Treasury, "
-        "FXStreet, Investing.com",
+        f"**Profile:** {profile.id}",
+        f"**Sources:** {labels.sources_line}",
         "",
-        "## Market Read",
+        f"## {labels.market_read_label}",
         "",
         market_read,
         "",
@@ -178,10 +142,11 @@ def render_markdown(
 
     for i, item in enumerate(items[:7], 1):
         takeaway = item.get("why_it_matters") or item.get("summary", "")
+        signal = profile.format_signal(str(item.get("signal", "")))
         lines.append(f"### {i}. {item['title']}")
         lines.append(
-            f"- **Source:** {_source_label(item['source'])} | "
-            f"**Direction:** {_format_direction(item['likely_usdjpy_direction'])} | "
+            f"- **Source:** {profile.source_label(item['source'])} | "
+            f"**{labels.signal_label}:** {signal} | "
             f"**Relevance:** {_relevance_label(item.get('relevance_score'))}"
         )
         lines.append(f"- {takeaway}")
@@ -193,14 +158,14 @@ def render_markdown(
         for w in watchlist:
             lines.append(f"- {w}")
     else:
-        lines.append("- Monitor BOJ release calendar and upcoming MPM dates")
-        lines.append("- Watch US data (CPI, payrolls) for rate differential moves")
+        for w in labels.default_watchlist:
+            lines.append(f"- {w}")
 
     lines.extend(["", "## Source Citations", ""])
     for item in citations[:10]:
         lines.append(
             f"- [{item['title']}]({item['url']}) — "
-            f"{_source_label(item['source'])}, {_display_date(item)}"
+            f"{profile.source_label(item['source'])}, {_display_date(item)}"
         )
 
     lines.append("")
@@ -220,10 +185,11 @@ def prepare_summary_items(
         max_items=12,
         max_per_source=settings.summary_max_per_source,
         threshold=threshold,
+        settings=settings,
     )
     if not story_items:
-        story_items = dedupe_scored_items(items, threshold, max_items=12)
-    citation_items = dedupe_scored_items(items, threshold, max_items=15)
+        story_items = dedupe_scored_items(items, threshold, settings, max_items=12)
+    citation_items = dedupe_scored_items(items, threshold, settings, max_items=15)
     return story_items, citation_items
 
 
@@ -240,6 +206,8 @@ def write_executive_summary(
     model: str | None = None,
     write_latest_manifest: bool = True,
 ) -> GeneratedReport | None:
+    profile = settings.active_profile
+    labels = profile.report_labels
     llm_config = settings.resolve_llm_config(provider, model)
     items = store.get_top_scored(
         settings.min_relevance_score,
@@ -270,25 +238,15 @@ def write_executive_summary(
         )
     except Exception:
         logger.exception("LLM summary failed; using score-only fallback")
-        # Top Stories are rendered from `items` regardless, so the fallback only
-        # needs the narrative fields.
         llm_summary = {
-            "market_read": (
-                "Automated LLM synthesis unavailable. See ranked stories below, "
-                "scored for USD/JPY relevance per article."
-            ),
-            "pressure": "unclear",
-            "pressure_confidence": "low",
-            "watchlist": [
-                "BOJ release calendar / next MPM",
-                "US CPI and Fed speakers",
-                "USD/JPY intervention rhetoric near key levels",
-            ],
+            "market_read": labels.fallback_market_read,
+            "watchlist": list(labels.default_watchlist),
         }
     body = render_markdown(
         llm_summary,
         story_items,
         now,
+        settings,
         provider=llm_config.provider,
         model=llm_config.model,
         citation_items=citation_items,
@@ -298,7 +256,7 @@ def write_executive_summary(
     run_id = now.strftime("%Y%m%d_%H%M%S")
     provider_suffix = _safe_filename_part(llm_config.provider)
     model_suffix = _safe_filename_part(llm_config.model)
-    stem = f"usdjpy_summary_{run_id}_{provider_suffix}_{model_suffix}"
+    stem = f"{labels.filename_prefix}_{run_id}_{provider_suffix}_{model_suffix}"
     path = settings.summaries_dir / f"{stem}.md"
     path.write_text(body, encoding="utf-8")
 
@@ -309,6 +267,7 @@ def write_executive_summary(
             story_items,
             now,
             settings.summaries_dir / f"{stem}.docx",
+            settings=settings,
             citation_items=citation_items,
         )
         logger.info("Wrote Word summary to %s", docx_path)
@@ -325,8 +284,6 @@ def write_executive_summary(
         model=llm_config.model,
     )
     if write_latest_manifest:
-        # Manifest records exact production paths for send-latest-email; benchmark
-        # summaries skip this to avoid polluting delivery state.
         write_latest_report_manifest(
             settings,
             run_id=run_id,

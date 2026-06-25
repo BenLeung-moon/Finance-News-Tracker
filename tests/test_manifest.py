@@ -10,50 +10,18 @@ from finance_news_tracker.manifest import (
 )
 
 
+from tests.conftest import make_test_settings
+
+
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(
-        llm_provider="deepseek",
-        deepseek_api_key="",
-        deepseek_base_url="https://api.deepseek.com/v1",
-        deepseek_model="deepseek-v4-flash",
-        openai_api_key="",
-        openai_base_url="https://api.openai.com/v1",
-        openai_model="gpt-5.4-mini",
-        anthropic_api_key="",
-        anthropic_base_url="https://api.anthropic.com/v1",
-        anthropic_model="claude-haiku-4-5-20251001",
-        data_dir=tmp_path / "data",
-        summaries_dir=tmp_path / "summaries",
-        log_dir=tmp_path / "logs",
-        recency_hours=72,
-        min_relevance_score=40,
-        max_articles_to_score=25,
-        request_timeout_seconds=30,
-        user_agent="test",
-        run_timezone="Asia/Hong_Kong",
-        run_weekdays_only=True,
-        holiday_guard_enabled=False,
-        report_retention_days=90,
-        log_level="INFO",
-        email_enabled=False,
-        smtp_host="",
-        smtp_port=587,
-        smtp_username="",
-        smtp_password="",
-        smtp_use_tls=True,
-        smtp_use_ssl=False,
-        email_from="",
-        email_to=[],
-        email_subject_prefix="[Test]",
-        email_attach_docx=True,
-    )
+    return make_test_settings(tmp_path)
 
 
 def test_write_and_read_latest_report_manifest(tmp_path: Path):
     settings = _settings(tmp_path)
     md = settings.summaries_dir / "usdjpy_summary_20260605_100000.md"
     docx = settings.summaries_dir / "usdjpy_summary_20260605_100000.docx"
-    settings.summaries_dir.mkdir(parents=True)
+    settings.summaries_dir.mkdir(parents=True, exist_ok=True)
     md.write_text("# test", encoding="utf-8")
     docx.write_bytes(b"docx")
 

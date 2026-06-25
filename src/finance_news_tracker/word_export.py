@@ -17,37 +17,10 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
+from finance_news_tracker.config import Settings
+
 GREY = RGBColor(0x66, 0x66, 0x66)
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
-
-_DIRECTION = {
-    "usd_jpy_up": "USD/JPY up (yen weaker)",
-    "usd_jpy_down": "USD/JPY down (yen stronger)",
-    "mixed": "Mixed",
-    "unclear": "Unclear",
-    "usd_jpy_bullish": "Bullish USD/JPY",
-    "usd_jpy_bearish": "Bearish USD/JPY",
-}
-
-_SOURCE_LABELS = {
-    "boj_whatsnew": "Bank of Japan",
-    "boj_statistics": "BOJ Statistics",
-    "nikkei_asia": "Nikkei Asia",
-    "nhk_world": "NHK WORLD-JAPAN",
-    "fed_press_monetary": "Federal Reserve (Monetary Policy)",
-    "fed_speeches": "Federal Reserve (Speeches)",
-    "us_treasury_press": "US Treasury",
-    "fxstreet_news": "FXStreet",
-    "investing_forex": "Investing.com (Forex)",
-}
-
-
-def _direction(value: str) -> str:
-    return _DIRECTION.get(value, value)
-
-
-def _source_label(source_id: str) -> str:
-    return _SOURCE_LABELS.get(source_id, source_id)
 
 
 def _to_hk(value: datetime) -> datetime:
@@ -146,26 +119,27 @@ def write_word_summary(
     items: list[dict[str, Any]],
     generated_at: datetime,
     out_path: Path,
-    max_stories: int = 7,
     *,
+    settings: Settings,
+    max_stories: int = 7,
     citation_items: list[dict[str, Any]] | None = None,
 ) -> Path:
+    profile = settings.active_profile
+    labels = profile.report_labels
     citations = citation_items if citation_items is not None else items
     doc = Document()
 
-    # Compact margins give the content more room to stay on one page.
     for section in doc.sections:
-        section.top_margin = section.bottom_margin = Pt(46)   # ~0.64"
-        section.left_margin = section.right_margin = Pt(54)   # ~0.75"
+        section.top_margin = section.bottom_margin = Pt(46)
+        section.left_margin = section.right_margin = Pt(54)
 
     normal = doc.styles["Normal"].font
     normal.name = "Calibri"
     normal.size = Pt(9)
 
-    # ---- Page 1: content -------------------------------------------------
     title = doc.add_paragraph()
     _tight(title, after=2)
-    tr = title.add_run("USD/JPY Executive Summary")
+    tr = title.add_run(labels.report_title)
     tr.bold = True
     tr.font.size = Pt(16)
 
@@ -173,13 +147,12 @@ def write_word_summary(
     _tight(meta, after=2)
     mr = meta.add_run(
         f"Generated {_format_generated_time(generated_at)}  |  "
-        "Sources: BOJ, Nikkei Asia, NHK, Federal Reserve, US Treasury, "
-        "FXStreet, Investing.com"
+        f"Sources: {labels.sources_line}"
     )
     mr.font.size = Pt(8)
     mr.font.color.rgb = GREY
 
-    _heading(doc, "Market Read")
+    _heading(doc, labels.market_read_label)
     p = doc.add_paragraph(str(llm_summary.get("market_read", "")))
     _tight(p, after=6)
 
@@ -190,9 +163,10 @@ def write_word_summary(
         _tight(p, after=4)
         head = p.add_run(f"{i}. {item['title']}")
         head.bold = True
+        signal = profile.format_signal(str(item.get("signal", "")))
         tag = p.add_run(
-            f"  ({_source_label(item['source'])} · "
-            f"{_direction(item['likely_usdjpy_direction'])} · "
+            f"  ({profile.source_label(item['source'])} · "
+            f"{signal} · "
             f"Relevance {_relevance_label(item.get('relevance_score'))})"
         )
         tag.font.size = Pt(8)
@@ -208,17 +182,13 @@ def write_word_summary(
         _add_hyperlink(p, item["url"], "Read more", size=8)
 
     _heading(doc, "Watchlist")
-    watchlist = llm_summary.get("watchlist") or [
-        "Monitor BOJ release calendar and upcoming MPM dates",
-        "Watch US data (CPI, payrolls) for rate-differential moves",
-    ]
+    watchlist = llm_summary.get("watchlist") or labels.default_watchlist
     for w in watchlist:
         p = doc.add_paragraph(str(w), style="List Bullet")
         _tight(p, after=2)
         for r in p.runs:
             r.font.size = Pt(9)
 
-    # ---- Page 2: sources -------------------------------------------------
     doc.add_page_break()
 
     _heading(doc, "Source Citations")
@@ -226,7 +196,9 @@ def write_word_summary(
         p = doc.add_paragraph(style="List Bullet")
         _tight(p, after=3)
         _add_hyperlink(p, item["url"], item["title"], size=9)
-        tail = p.add_run(f"  — {_source_label(item['source'])}, {_display_date(item)}")
+        tail = p.add_run(
+            f"  — {profile.source_label(item['source'])}, {_display_date(item)}"
+        )
         tail.font.size = Pt(8)
         tail.font.color.rgb = GREY
 

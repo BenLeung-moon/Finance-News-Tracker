@@ -6,141 +6,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from finance_news_tracker.profiles import get_active_profile, get_profile
+from finance_news_tracker.profiles.base import SourceConfig, TrackerProfile
+
 load_dotenv()
-
-# USD/JPY relevance prefilter keywords
-FX_KEYWORDS: list[str] = [
-    "usd/jpy",
-    "usd-jpy",
-    "dollar-yen",
-    "dollar yen",
-    "usdjpy",
-    "yen",
-    "jpy",
-    "boj",
-    "bank of japan",
-    "fed",
-    "federal reserve",
-    "rate",
-    "rates",
-    "interest rate",
-    "monetary policy",
-    "inflation",
-    "cpi",
-    "wage",
-    "wages",
-    "jgb",
-    "bond",
-    "treasury",
-    "yield",
-    "intervention",
-    "mof",
-    "finance ministry",
-    "trade balance",
-    "current account",
-    "oil",
-    "crude",
-    "risk-off",
-    "risk on",
-    "carry trade",
-    "fx",
-    "forex",
-    "exchange rate",
-    "currency",
-    "dollar",
-    "gdp",
-    "pmi",
-    "tankan",
-    "mpm",
-    "statement on monetary policy",
-    "fomc",
-    "powell",
-    "fed funds",
-    "treasury yields",
-    "tic",
-    "treasury international capital",
-    "quarterly refunding",
-    "payrolls",
-    "pce",
-    "ppi",
-    "retail sales",
-    "ism",
-    "tariff",
-    "debt issuance",
-    "fiscal",
-]
-
-
-@dataclass
-class SourceConfig:
-    id: str
-    name: str
-    kind: str  # "rss" | "html"
-    url: str
-    extra_urls: list[str] = field(default_factory=list)
-
-
-SOURCES: list[SourceConfig] = [
-    SourceConfig(
-        id="boj_whatsnew",
-        name="Bank of Japan (What's New)",
-        kind="rss",
-        # English feed: titles come through in English (the non-/en/ feed is Japanese)
-        url="https://www.boj.or.jp/en/rss/whatsnew.xml",
-    ),
-    SourceConfig(
-        id="boj_statistics",
-        name="Bank of Japan (Statistics)",
-        kind="rss",
-        url="https://www.boj.or.jp/en/rss/statistics.xml",
-    ),
-    SourceConfig(
-        id="nikkei_asia",
-        name="Nikkei Asia",
-        kind="rss",
-        url="https://asia.nikkei.com/rss/feed/nar",
-    ),
-    SourceConfig(
-        id="nhk_world",
-        name="NHK WORLD-JAPAN",
-        kind="html",
-        url="https://www3.nhk.or.jp/nhkworld/en/news/list/",
-        extra_urls=[
-            "https://www3.nhk.or.jp/nhkworld/en/news/tags/60/",  # Biz / Tech
-            "https://www3.nhk.or.jp/nhkworld/en/news/",
-        ],
-    ),
-    SourceConfig(
-        id="fed_press_monetary",
-        name="Federal Reserve (Monetary Policy Press)",
-        kind="rss",
-        url="https://www.federalreserve.gov/feeds/press_monetary.xml",
-    ),
-    SourceConfig(
-        id="fed_speeches",
-        name="Federal Reserve (Speeches)",
-        kind="rss",
-        url="https://www.federalreserve.gov/feeds/speeches.xml",
-    ),
-    SourceConfig(
-        id="us_treasury_press",
-        name="US Treasury (Press Releases)",
-        kind="html",
-        url="https://home.treasury.gov/news/press-releases",
-    ),
-    SourceConfig(
-        id="fxstreet_news",
-        name="FXStreet (Forex News)",
-        kind="rss",
-        url="https://www.fxstreet.com/rss/news",
-    ),
-    SourceConfig(
-        id="investing_forex",
-        name="Investing.com (Forex)",
-        kind="rss",
-        url="https://www.investing.com/rss/forex.rss",
-    ),
-]
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -193,12 +62,21 @@ class Settings:
     email_to: list[str]
     email_subject_prefix: str
     email_attach_docx: bool
-    fx_keywords: list[str] = field(default_factory=lambda: list(FX_KEYWORDS))
-    # Per-source caps for noisy FX media feeds (FXStreet, Investing.com)
-    fx_media_score_limit_per_source: int = 3
-    fx_media_score_limit_combined: int = 5
+    tracker_profile_id: str
+    active_profile: TrackerProfile
+    # Per-source caps for noisy feeds (FXStreet, Investing.com, etc.)
+    noisy_score_limit_per_source: int = 3
+    noisy_score_limit_combined: int = 5
     dedupe_similarity_threshold: float = 0.82
     summary_max_per_source: int = 2
+
+    @property
+    def sources(self) -> list[SourceConfig]:
+        return self.active_profile.sources
+
+    @property
+    def keywords(self) -> list[str]:
+        return self.active_profile.flat_keywords()
 
     @property
     def db_path(self) -> Path:
@@ -257,6 +135,24 @@ def get_settings() -> Settings:
     data_dir.mkdir(parents=True, exist_ok=True)
     summaries_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    profile_id = os.getenv("TRACKER_PROFILE", "usdjpy").strip().lower()
+    active_profile = get_profile(profile_id)
+
+    # Accept legacy FX_MEDIA_* env names for backward compatibility
+    noisy_per_source = int(
+        os.getenv(
+            "NOISY_SCORE_LIMIT_PER_SOURCE",
+            os.getenv("FX_MEDIA_SCORE_LIMIT_PER_SOURCE", "3"),
+        )
+    )
+    noisy_combined = int(
+        os.getenv(
+            "NOISY_SCORE_LIMIT_COMBINED",
+            os.getenv("FX_MEDIA_SCORE_LIMIT_COMBINED", "5"),
+        )
+    )
+
     return Settings(
         llm_provider=os.getenv("LLM_PROVIDER", "deepseek"),
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
@@ -281,12 +177,8 @@ def get_settings() -> Settings:
         recency_hours=int(os.getenv("RECENCY_HOURS", "72")),
         min_relevance_score=int(os.getenv("MIN_RELEVANCE_SCORE", "40")),
         max_articles_to_score=int(os.getenv("MAX_ARTICLES_TO_SCORE", "25")),
-        fx_media_score_limit_per_source=int(
-            os.getenv("FX_MEDIA_SCORE_LIMIT_PER_SOURCE", "3")
-        ),
-        fx_media_score_limit_combined=int(
-            os.getenv("FX_MEDIA_SCORE_LIMIT_COMBINED", "5")
-        ),
+        noisy_score_limit_per_source=noisy_per_source,
+        noisy_score_limit_combined=noisy_combined,
         dedupe_similarity_threshold=float(
             os.getenv("DEDUPE_SIMILARITY_THRESHOLD", "0.82")
         ),
@@ -314,4 +206,12 @@ def get_settings() -> Settings:
             "EMAIL_SUBJECT_PREFIX", "[Finance News Tracker]"
         ),
         email_attach_docx=_env_bool("EMAIL_ATTACH_DOCX", True),
+        tracker_profile_id=profile_id,
+        active_profile=active_profile,
     )
+
+
+# Backward-compatible module-level aliases (default profile)
+_default = get_active_profile()
+SOURCES: list[SourceConfig] = _default.sources
+FX_KEYWORDS: list[str] = _default.flat_keywords()

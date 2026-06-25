@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from finance_news_tracker.config import SOURCES, Settings
+from finance_news_tracker.config import Settings
 from finance_news_tracker.collectors.enrich import enrich_from_html
 from finance_news_tracker.collectors.html import collect_html
 from finance_news_tracker.collectors.rss import collect_rss
@@ -40,7 +40,7 @@ def collect_all(
         headers=headers,
         follow_redirects=True,
     ) as client:
-        for source in SOURCES:
+        for source in settings.sources:
             try:
                 if source.kind == "rss":
                     items = collect_rss(source, settings)

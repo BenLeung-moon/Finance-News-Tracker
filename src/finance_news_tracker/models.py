@@ -30,8 +30,8 @@ class ScoreResult:
 
     article_id: int
     relevance_score: int
-    fx_channel: str
-    likely_usdjpy_direction: str
+    category: str
+    signal: str
     confidence: str
     summary: str
     why_it_matters: str
