@@ -2,6 +2,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from finance_news_tracker.models import Article, ScoreResult
 from finance_news_tracker.store import Store
 
@@ -58,7 +60,7 @@ def test_one_article_can_have_scores_for_three_providers(tmp_path: Path):
     store.save_score(_score(aid, "openai", "gpt-5.4-mini", 70))
     store.save_score(_score(aid, "anthropic", "claude-haiku-4-5-20251001", 65))
 
-    assert store.stats()["scored"] == 3
+    assert store.stats()["score_rows"] == 3
     assert store.get_unscored_for("deepseek", "deepseek-v4-flash") == []
     assert store.get_unscored_for("openai", "gpt-5.4-mini") == []
     assert store.get_unscored_for("anthropic", "claude-haiku-4-5-20251001") == []
@@ -170,3 +172,52 @@ def test_rebuilds_legacy_score_table_with_provider_model(tmp_path: Path):
     assert len(rows) == 1
     assert rows[0]["provider"] == "deepseek"
     assert rows[0]["model"] == "deepseek-v4-flash"
+
+
+def test_legacy_scores_migration_requires_backup_for_tracker_db(tmp_path: Path):
+    db = tmp_path / "tracker.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            published_at TEXT,
+            summary TEXT,
+            content_hash TEXT NOT NULL UNIQUE,
+            raw_excerpt TEXT,
+            collected_at TEXT NOT NULL,
+            scored INTEGER DEFAULT 0
+        );
+        CREATE TABLE scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id INTEGER NOT NULL UNIQUE,
+            relevance_score INTEGER NOT NULL,
+            fx_channel TEXT,
+            likely_usdjpy_direction TEXT,
+            confidence TEXT,
+            summary TEXT,
+            why_it_matters TEXT,
+            source_citation TEXT,
+            model_raw TEXT,
+            scored_at TEXT NOT NULL
+        );
+        INSERT INTO articles
+            (id, source, title, url, content_hash, collected_at, scored)
+        VALUES
+            (1, 'nikkei_asia', 'Needs backup', 'https://example.com/backup',
+             'backup', '2026-06-11T00:00:00+00:00', 1);
+        INSERT INTO scores
+            (article_id, relevance_score, fx_channel, likely_usdjpy_direction,
+             confidence, summary, why_it_matters, source_citation, model_raw, scored_at)
+        VALUES
+            (1, 80, 'monetary_policy', 'usd_jpy_up', 'high', 'Legacy summary',
+             'Rates', 'Legacy', '{}', '2026-06-11T00:00:00+00:00');
+        """
+    )
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="backup"):
+        Store(db, legacy_model="deepseek-v4-flash")

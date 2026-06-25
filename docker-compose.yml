@@ -9,6 +9,6 @@ services:
       - ./logs:/app/logs
     # One-shot job; override command per invocation.
     # Low-cost collection: docker compose run --rm tracker python -m finance_news_tracker collect-scheduled
-    # Benchmark: docker compose run --rm tracker python -m finance_news_tracker score --test-all --dry-run
+    # Dev benchmark: docker compose run --rm tracker python scripts/benchmark_models.py --dry-run
     # Full production: docker compose run --rm tracker python -m finance_news_tracker run-scheduled
     command: ["python", "-m", "finance_news_tracker", "run-once"]

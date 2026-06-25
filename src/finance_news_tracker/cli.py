@@ -15,7 +15,6 @@ from finance_news_tracker.pipeline import (
     run_collect,
     run_once,
     run_score,
-    run_score_test_all,
     run_summarize,
 )
 from finance_news_tracker.run_scheduled import (
@@ -55,11 +54,6 @@ def main(argv: list[str] | None = None) -> None:
     score_parser.add_argument("--provider", choices=["deepseek", "openai", "anthropic"])
     score_parser.add_argument("--model", help="Override configured model for provider")
     score_parser.add_argument(
-        "--test-all",
-        action="store_true",
-        help="Benchmark DeepSeek, OpenAI, and Anthropic sequentially over one frozen article set",
-    )
-    score_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Count planned scoring calls without hitting provider APIs",
@@ -72,7 +66,7 @@ def main(argv: list[str] | None = None) -> None:
     summarize_parser.add_argument(
         "--provider",
         choices=["deepseek", "openai", "anthropic"],
-        help="Generate a provider-specific benchmark summary",
+        help="Generate a summary for a specific provider/model",
     )
     summarize_parser.add_argument("--model", help="Override configured model for provider")
     summarize_parser.add_argument(
@@ -80,7 +74,19 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Write production latest_report.json for this summary",
     )
-    sub.add_parser("run-once", help="Collect, score, and summarize in one run")
+    run_once_parser = sub.add_parser(
+        "run-once",
+        help="Collect, score, and summarize in one run",
+    )
+    run_once_parser.add_argument(
+        "--provider",
+        choices=["deepseek", "openai", "anthropic"],
+        help="Override LLM_PROVIDER for this run",
+    )
+    run_once_parser.add_argument(
+        "--model",
+        help="Override configured model for the selected provider",
+    )
     sub.add_parser(
         "collect-scheduled",
         help="Production collection only: weekday guard, lock, no LLM, no email",
@@ -126,24 +132,13 @@ def main(argv: list[str] | None = None) -> None:
             stats = run_collect()
             print(f"Done. Stats: {stats}")
         elif args.command == "score":
-            if args.test_all:
-                summaries = run_score_test_all(dry_run=args.dry_run)
-                for summary in summaries:
-                    prefix = "Would score" if summary.dry_run else "Scored"
-                    print(
-                        f"{summary.provider}/{summary.model}: {prefix} "
-                        f"{summary.scored if not summary.dry_run else summary.attempted} "
-                        f"article(s); attempted={summary.attempted}, "
-                        f"skipped={summary.skipped}, failed={summary.failed}"
-                    )
-            else:
-                n = run_score(
-                    provider=args.provider,
-                    model=args.model,
-                    dry_run=args.dry_run,
-                )
-                verb = "Would score" if args.dry_run else "Scored"
-                print(f"{verb} {n} article(s).")
+            n = run_score(
+                provider=args.provider,
+                model=args.model,
+                dry_run=args.dry_run,
+            )
+            verb = "Would score" if args.dry_run else "Scored"
+            print(f"{verb} {n} article(s).")
         elif args.command == "summarize":
             report = run_summarize(
                 provider=args.provider,
@@ -158,7 +153,7 @@ def main(argv: list[str] | None = None) -> None:
                 print("No summary generated (no scored articles).", file=sys.stderr)
                 sys.exit(1)
         elif args.command == "run-once":
-            report = run_once()
+            report = run_once(provider=args.provider, model=args.model)
             if report:
                 print(f"Pipeline complete. Summary: {report.markdown_path}")
             else:

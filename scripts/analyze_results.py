@@ -82,8 +82,11 @@ def main() -> None:
     legacy_unscored = conn.execute(
         "SELECT COUNT(*) AS c FROM articles WHERE scored = 0"
     ).fetchone()["c"]
-    scored = conn.execute("SELECT COUNT(*) AS c FROM scores").fetchone()["c"]
-    print(f"\nLegacy unscored flag: {legacy_unscored}, Score rows: {scored}")
+    score_rows = conn.execute("SELECT COUNT(*) AS c FROM scores").fetchone()["c"]
+    print(
+        f"\nLegacy articles.scored=0 count (deprecated): {legacy_unscored}, "
+        f"Score rows: {score_rows}"
+    )
 
     print("\n=== Score rows by provider/model ===")
     for row in conn.execute(

@@ -11,7 +11,6 @@ from finance_news_tracker.llm import (
     test_llm_connectivity as llm_connectivity_self_test,
 )
 from finance_news_tracker.models import Article, ScoreResult
-from finance_news_tracker.pipeline import run_score_test_all
 from finance_news_tracker.run_scheduled import run_collect_scheduled_workflow
 from finance_news_tracker.store import Store
 from finance_news_tracker.summary import write_executive_summary
@@ -162,31 +161,6 @@ def test_complete_json_anthropic_with_mocked_response(monkeypatch):
 
     assert parsed == {"ok": True}
     assert "Before" in raw
-
-
-def test_test_all_freezes_ranked_article_set_once(monkeypatch, tmp_path: Path):
-    settings = _settings(tmp_path)
-    store = Store(settings.db_path)
-    store.upsert_article(_article("a"))
-    store.upsert_article(_article("b"))
-    calls = {"rank": 0}
-
-    def fake_rank(items: list[tuple[Article, int]], settings: Settings):
-        calls["rank"] += 1
-        return list(items)[:1]
-
-    monkeypatch.setattr("finance_news_tracker.pipeline.get_settings", lambda: settings)
-    monkeypatch.setattr("finance_news_tracker.pipeline.rank_for_scoring", fake_rank)
-
-    summaries = run_score_test_all(dry_run=True)
-
-    assert calls["rank"] == 1
-    assert [summary.provider for summary in summaries] == [
-        "deepseek",
-        "openai",
-        "anthropic",
-    ]
-    assert all(summary.attempted == 1 for summary in summaries)
 
 
 def test_provider_summary_does_not_overwrite_latest_manifest(monkeypatch, tmp_path: Path):

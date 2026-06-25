@@ -549,13 +549,14 @@ class Store:
             )
 
     def stats(self) -> dict[str, int]:
+        """Return article totals and provider/model score row counts.
+
+        中文注解：`articles.scored` 是遗留字段，不再反映 provider-aware 评分状态。
+        """
         with self._conn() as conn:
             total = conn.execute("SELECT COUNT(*) AS c FROM articles").fetchone()["c"]
-            unscored = conn.execute(
-                "SELECT COUNT(*) AS c FROM articles WHERE scored = 0"
-            ).fetchone()["c"]
-            scored = conn.execute("SELECT COUNT(*) AS c FROM scores").fetchone()["c"]
-        return {"articles": total, "unscored": unscored, "scored": scored}
+            score_rows = conn.execute("SELECT COUNT(*) AS c FROM scores").fetchone()["c"]
+        return {"articles": total, "score_rows": score_rows}
 
 
 def get_store(settings: Settings) -> Store:

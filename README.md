@@ -9,10 +9,9 @@ USD/JPY news tracker that collects fresh items from **Japan** (BOJ, Nikkei Asia,
 | Command | Purpose |
 |---------|---------|
 | `collect` | Fetch news from all sources |
-| `score --provider deepseek\|openai\|anthropic` | Score missing articles for one provider/model |
-| `score --test-all` | Benchmark DeepSeek, OpenAI, and Anthropic sequentially over one frozen article set |
-| `summarize --provider deepseek\|openai\|anthropic` | Generate a provider-specific benchmark summary |
-| `run-once` | Collect → score → summarize (generation only, no email) |
+| `score --provider deepseek\|openai\|anthropic [--model MODEL]` | Score missing articles for one provider/model |
+| `summarize --provider deepseek\|openai\|anthropic [--model MODEL]` | Generate a summary for a specific provider/model |
+| `run-once [--provider ...] [--model MODEL]` | Collect → score → summarize (generation only, no email) |
 | `test-llm` | Validate LLM adapter/config wiring; calls the API only when a key is set |
 | `test-email` | Send a test SMTP message to all `EMAIL_TO` recipients |
 | `send-latest-email` | Send the manifest-backed latest report |
@@ -54,17 +53,25 @@ copy .env.example .env
 # Full pipeline: collect → score → summarize (no email)
 python -m finance_news_tracker run-once
 
-# Step by step:
+# Override provider/model for the full pipeline:
+python -m finance_news_tracker run-once --provider deepseek --model deepseek-v4-flash
+
+# Step by step (writes latest_report.json when using --write-latest-manifest):
 python -m finance_news_tracker collect
 python -m finance_news_tracker score --provider deepseek
-python -m finance_news_tracker summarize --provider deepseek
-
-# Benchmark all providers over the same frozen article set:
-python -m finance_news_tracker score --test-all --dry-run
-python -m finance_news_tracker score --test-all
+python -m finance_news_tracker summarize --provider deepseek --write-latest-manifest
 ```
 
-中文注解：`--test-all --dry-run` 只统计计划调用量，不访问 LLM API；正式 `--test-all` 会按 DeepSeek → OpenAI → Anthropic 顺序执行。
+中文注解：`run-once` 始终会写 `summaries/latest_report.json`。分步 `summarize --provider ...` 默认不写 manifest，避免覆盖生产指针；需要 `send-latest-email` 时请显式加 `--write-latest-manifest`。
+
+Development-only model benchmark (not part of the production CLI):
+
+```powershell
+python scripts/benchmark_models.py --dry-run
+python scripts/benchmark_models.py
+```
+
+中文注解：`scripts/benchmark_models.py` 会在同一 frozen article set 上依次对比 DeepSeek、OpenAI、Anthropic；`--dry-run` 只统计计划调用量，不访问 LLM API。
 
 Output:
 
@@ -73,7 +80,7 @@ Output:
 - Markdown summary: `summaries/usdjpy_summary_YYYYMMDD_HHMMSS_provider_model.md`
 - Word summary: `summaries/usdjpy_summary_YYYYMMDD_HHMMSS_provider_model.docx`
 
-Provider-specific benchmark summaries do not overwrite `summaries/latest_report.json` by default. `send-latest-email` continues to use the production manifest only.
+Provider-specific summaries generated via `summarize --provider ...` do not overwrite `summaries/latest_report.json` unless `--write-latest-manifest` is set. `run-once` and `run-scheduled` always write the production manifest. `send-latest-email` continues to use the manifest only.
 
 ## LLM Connectivity Self-Test
 
