@@ -330,7 +330,7 @@ def rank_for_scoring(
 
 ) -> list[tuple[Article, int]]:
 
-    """Return articles prioritized for DeepSeek scoring."""
+    """Return articles prioritized for provider/model scoring."""
 
 
 

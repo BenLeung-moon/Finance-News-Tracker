@@ -6,8 +6,19 @@
 
 CRON_TZ=Asia/Hong_Kong
 
-# --- Production (recommended): weekday guard + lock + generate + optional email ---
-0 10 * * 1-5 cd /opt/finance-news-tracker && flock -n /tmp/finance-news-tracker.lock docker compose run --rm tracker python -m finance_news_tracker run-scheduled >> logs/cron.log 2>&1
+# --- Production data-only collection (recommended low-cost weekday corpus update) ---
+0 10 * * 1-5 cd /opt/finance-news-tracker && flock -n /tmp/finance-news-tracker.lock docker compose run --rm tracker python -m finance_news_tracker collect-scheduled >> logs/cron.log 2>&1
+
+# --- Development model benchmark (not for production cron) ---
+# cd /opt/finance-news-tracker && docker compose run --rm tracker python scripts/benchmark_models.py --dry-run
+# cd /opt/finance-news-tracker && docker compose run --rm tracker python scripts/benchmark_models.py
+# cd /opt/finance-news-tracker && docker compose run --rm tracker python -m finance_news_tracker score --provider deepseek
+# cd /opt/finance-news-tracker && docker compose run --rm tracker python -m finance_news_tracker score --provider openai
+# cd /opt/finance-news-tracker && docker compose run --rm tracker python -m finance_news_tracker score --provider anthropic
+# cd /opt/finance-news-tracker && docker compose run --rm tracker python -m finance_news_tracker summarize --provider deepseek
+
+# --- Full production generation + optional email ---
+# 0 10 * * 1-5 cd /opt/finance-news-tracker && flock -n /tmp/finance-news-tracker.lock docker compose run --rm tracker python -m finance_news_tracker run-scheduled >> logs/cron.log 2>&1
 
 # --- Generate only (no email) ---
 # 0 10 * * 1-5 cd /opt/finance-news-tracker && flock -n /tmp/finance-news-tracker.lock docker compose run --rm tracker python -m finance_news_tracker run-once >> logs/cron.log 2>&1

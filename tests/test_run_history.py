@@ -8,7 +8,7 @@ def test_run_history_lifecycle(tmp_path: Path):
     history_id = store.create_run_history(
         run_id="20260605_100000",
         trigger_type="scheduled",
-        llm_model="deepseek-chat",
+        llm_model="deepseek-v4-flash",
     )
     store.finish_run_history(
         history_id,

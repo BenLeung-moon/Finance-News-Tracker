@@ -157,9 +157,16 @@ def parse_email_recipients(value: str) -> list[str]:
 
 @dataclass
 class Settings:
+    llm_provider: str
     deepseek_api_key: str
     deepseek_base_url: str
     deepseek_model: str
+    openai_api_key: str
+    openai_base_url: str
+    openai_model: str
+    anthropic_api_key: str
+    anthropic_base_url: str
+    anthropic_model: str
     data_dir: Path
     summaries_dir: Path
     log_dir: Path
@@ -205,6 +212,43 @@ class Settings:
     def run_lock_path(self) -> Path:
         return self.data_dir / "run.lock"
 
+    def resolve_llm_config(
+        self,
+        provider: str | None = None,
+        model: str | None = None,
+    ):
+        """Resolve None to the configured active provider, never to all providers.
+
+        中文注解：`provider=None` 只代表当前默认 provider，不能代表全表混合查询。
+        """
+        from finance_news_tracker.llm import LlmConfig
+
+        selected_provider = (provider or self.llm_provider).strip().lower()
+        if selected_provider == "deepseek":
+            return LlmConfig(
+                provider="deepseek",
+                model=model or self.deepseek_model,
+                api_key=self.deepseek_api_key,
+                base_url=self.deepseek_base_url,
+            )
+        if selected_provider == "openai":
+            return LlmConfig(
+                provider="openai",
+                model=model or self.openai_model,
+                api_key=self.openai_api_key,
+                base_url=self.openai_base_url,
+            )
+        if selected_provider == "anthropic":
+            return LlmConfig(
+                provider="anthropic",
+                model=model or self.anthropic_model,
+                api_key=self.anthropic_api_key,
+                base_url=self.anthropic_base_url,
+            )
+        raise ValueError(
+            "Unsupported LLM_PROVIDER. Expected one of: deepseek, openai, anthropic."
+        )
+
 
 def get_settings() -> Settings:
     data_dir = Path(os.getenv("DATA_DIR", "data"))
@@ -214,9 +258,23 @@ def get_settings() -> Settings:
     summaries_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     return Settings(
+        llm_provider=os.getenv("LLM_PROVIDER", "deepseek"),
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
-        deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        deepseek_base_url=os.getenv(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
+        ),
+        deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+        openai_base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini"),
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
+        anthropic_base_url=os.getenv(
+            "ANTHROPIC_BASE_URL",
+            "https://api.anthropic.com/v1",
+        ),
+        anthropic_model=os.getenv(
+            "ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"
+        ),
         data_dir=data_dir,
         summaries_dir=summaries_dir,
         log_dir=log_dir,
