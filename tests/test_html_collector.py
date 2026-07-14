@@ -50,3 +50,33 @@ def test_html_extractor_parses_time_datetime():
     assert len(items) == 1
     assert items[0].published_at is not None
     assert items[0].published_at.year == 2026
+
+
+def test_html_extractor_allows_configured_external_domains():
+    source = SourceConfig(
+        id="hitachi_test",
+        name="Hitachi Test",
+        kind="html",
+        url="https://www.hitachi-power-solutions.com/topics/news/index.html",
+        link_patterns=["/New/cnews/month/"],
+        allowed_domains=["www.hitachi.co.jp"],
+        languages=["ja"],
+    )
+    html = """
+    <html><body>
+      <a href="https://www.hitachi.co.jp/New/cnews/month/2025/11/1127.html">
+        日立と日立パワーソリューションズがマイクログリッドを融合したモデル構築に着手
+      </a>
+      <a href="https://unrelated.example.com/New/cnews/month/2025/11/1127.html">
+        unrelated external article
+      </a>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    items = _extract_from_page(
+        soup,
+        source,
+        "https://www.hitachi-power-solutions.com/topics/news/index.html",
+    )
+    assert len(items) == 1
+    assert items[0].url.startswith("https://www.hitachi.co.jp/")

@@ -11,15 +11,18 @@ class SourceConfig:
 
     id: str
     name: str
-    kind: str  # "rss" | "html"
+    kind: str  # "rss" | "html" | source-specific collector kinds
     url: str
     extra_urls: list[str] = field(default_factory=list)
     languages: list[str] = field(default_factory=lambda: ["en"])
     link_patterns: list[str] = field(default_factory=list)
     exclude_patterns: list[str] = field(default_factory=list)
+    allowed_domains: list[str] = field(default_factory=list)
+    allow_http_statuses: list[int] = field(default_factory=list)
     priority_tier: int = 2
     is_noisy: bool = False
     url_year_templated: bool = False
+    allow_pdf: bool = False
 
 
 @dataclass

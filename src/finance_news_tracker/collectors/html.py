@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from finance_news_tracker.collectors.http import browser_headers
 from finance_news_tracker.collectors.utils import (
     content_hash,
     parse_date_from_text,
@@ -49,18 +50,28 @@ def _same_site(href: str, page_url: str) -> bool:
     return urlparse(href).netloc == urlparse(page_url).netloc
 
 
+def _domain_allowed(href: str, page_url: str, source: SourceConfig) -> bool:
+    if _same_site(href, page_url):
+        return True
+    netloc = urlparse(href).netloc.lower()
+    return netloc in {d.lower() for d in source.allowed_domains}
+
+
 def _link_allowed(href: str, source: SourceConfig, page_url: str) -> bool:
     if not href or href.startswith("#") or href.lower().startswith("javascript:"):
         return False
-    if not _same_site(href, page_url):
+    full_url = _normalize_url(href, page_url)
+    if not _domain_allowed(full_url, page_url, source):
         return False
 
     for pat in source.exclude_patterns:
-        if pat and pat in href:
+        if pat == ".pdf" and source.allow_pdf:
+            continue
+        if pat and (pat in href or pat in full_url):
             return False
 
     if source.link_patterns:
-        return any(pat in href for pat in source.link_patterns)
+        return any(pat in href or pat in full_url for pat in source.link_patterns)
 
     # No patterns: accept in-site links that look like article pages
     lowered = href.lower()
@@ -68,6 +79,17 @@ def _link_allowed(href: str, source: SourceConfig, page_url: str) -> bool:
         if not re.search(r"/\d{4}/", href):
             return False
     return True
+
+
+def _context_parent(link):
+    """Return the nearest news-item container without falling back to page-wide divs."""
+    parent = link.find_parent(["li", "article", "tr", "dl"])
+    if parent:
+        return parent
+    parent = link.find_parent(["div", "section"])
+    if parent and len(parent.get_text(" ", strip=True)) <= 1000:
+        return parent
+    return None
 
 
 def _extract_date_from_context(link, page_url: str) -> datetime | None:
@@ -78,7 +100,13 @@ def _extract_date_from_context(link, page_url: str) -> datetime | None:
         if parsed:
             return parsed
 
-    parent = link.find_parent(["article", "li", "div", "section", "tr", "dl"])
+    href = link.get("href", "").strip()
+    if href:
+        parsed = parse_date_from_text(_normalize_url(href, page_url))
+        if parsed:
+            return parsed
+
+    parent = _context_parent(link)
     if parent:
         for t in parent.find_all("time"):
             if t.get("datetime"):
@@ -116,7 +144,7 @@ def _extract_from_page(
             continue
         seen_urls.add(url)
 
-        parent = link.find_parent(["article", "li", "div", "section"])
+        parent = _context_parent(link)
         context = parent.get_text(" ", strip=True) if parent else ""
         published_at = _extract_date_from_context(link, page_url)
 
@@ -137,7 +165,7 @@ def _extract_from_page(
 
 def collect_html(source: SourceConfig, settings: Settings) -> list[Article]:
     urls = resolve_source_urls(source)
-    headers = {"User-Agent": settings.user_agent}
+    headers = browser_headers(settings)
     all_articles: list[Article] = []
     seen_hashes: set[str] = set()
 
@@ -149,7 +177,11 @@ def collect_html(source: SourceConfig, settings: Settings) -> list[Article]:
         for page_url in urls:
             try:
                 response = client.get(page_url)
-                response.raise_for_status()
+                if (
+                    response.status_code >= 400
+                    and response.status_code not in source.allow_http_statuses
+                ):
+                    response.raise_for_status()
             except httpx.HTTPError:
                 logger.exception("Failed to fetch HTML page: %s", page_url)
                 continue

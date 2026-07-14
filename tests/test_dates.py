@@ -29,6 +29,14 @@ def test_parse_numeric_date():
     assert dt.month == 3
 
 
+def test_parse_compact_yymmdd_date_from_url():
+    dt = parse_date_from_text("https://www.tepco.co.jp/press/release/2026/pdf3/260709j0101.pdf")
+    assert dt is not None
+    assert dt.year == 2026
+    assert dt.month == 7
+    assert dt.day == 9
+
+
 def test_parse_datetime_attr_iso():
     dt = parse_datetime_attr("2026-03-25")
     assert dt is not None
@@ -60,7 +68,7 @@ def test_jp_storage_prefilter_policy_keyword():
         "finance_news_tracker.profiles", fromlist=["get_profile"]
     ).get_profile("jp_storage")
     article = Article(
-        source="meti_energy_press_ja",
+        source="anre_news_release",
         title="容量市場の制度設計について公表",
         url="https://example.com/1",
         published_at=datetime.now(timezone.utc),

@@ -8,6 +8,7 @@ import httpx
 from finance_news_tracker.config import Settings
 from finance_news_tracker.collectors.enrich import enrich_from_html
 from finance_news_tracker.collectors.html import collect_html
+from finance_news_tracker.collectors.http import browser_headers
 from finance_news_tracker.collectors.rss import collect_rss
 from finance_news_tracker.collectors.utils import (
     content_hash,
@@ -33,7 +34,7 @@ def collect_all(
     articles: list[Article] = []
     seen_hashes: set[str] = set()
     now = datetime.now(timezone.utc)
-    headers = {"User-Agent": settings.user_agent}
+    headers = browser_headers(settings)
 
     with httpx.Client(
         timeout=settings.request_timeout_seconds,
