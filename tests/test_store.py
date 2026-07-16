@@ -8,9 +8,9 @@ from finance_news_tracker.models import Article, ScoreResult
 from finance_news_tracker.store import Store
 
 
-def _article(content_hash: str = "abc123") -> Article:
+def _article(content_hash: str = "abc123", source: str = "nikkei_asia") -> Article:
     return Article(
-        source="nikkei_asia",
+        source=source,
         title="Yen moves on Fed outlook",
         url=f"https://example.com/{content_hash}",
         published_at=datetime.now(timezone.utc),
@@ -100,6 +100,35 @@ def test_summary_reads_never_mix_provider_models(tmp_path: Path):
     assert top[0]["relevance_score"] == 75
     assert len(recent) == 1
     assert recent[0]["provider"] == "deepseek"
+
+
+def test_provider_reads_can_filter_to_profile_sources(tmp_path: Path):
+    store = Store(tmp_path / "test.db")
+    jp_id, _ = store.upsert_article(_article("jp-storage", source="occto_rss"))
+    fx_id, _ = store.upsert_article(_article("fx-news", source="fxstreet_news"))
+    store.save_score(_score(jp_id, "deepseek", "deepseek-v4-pro", 75))
+    store.save_score(_score(fx_id, "deepseek", "deepseek-v4-pro", 95))
+
+    unscored = store.get_unscored_for(
+        "openai",
+        "gpt-5.4-mini",
+        source_ids={"occto_rss"},
+    )
+    top = store.get_top_scored(
+        40,
+        provider="deepseek",
+        model="deepseek-v4-pro",
+        source_ids={"occto_rss"},
+    )
+    recent = store.get_recently_scored_all(
+        provider="deepseek",
+        model="deepseek-v4-pro",
+        source_ids={"occto_rss"},
+    )
+
+    assert [article.source for article, _id in unscored] == ["occto_rss"]
+    assert [row["source"] for row in top] == ["occto_rss"]
+    assert [row["source"] for row in recent] == ["occto_rss"]
 
 
 def test_save_score_does_not_block_another_provider_with_articles_scored(tmp_path: Path):

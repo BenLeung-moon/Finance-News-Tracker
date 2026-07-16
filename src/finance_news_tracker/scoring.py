@@ -32,7 +32,7 @@ def score_article(
     *,
     llm_config: LlmConfig | None = None,
 ) -> ScoreResult:
-    config = llm_config or settings.resolve_llm_config()
+    config = llm_config or settings.resolve_scoring_llm_config()
     profile = settings.active_profile
     schema = profile.scoring_schema
     parsed, content = complete_json(
@@ -69,7 +69,7 @@ def score_articles_batch(
     provider: str | None = None,
     model: str | None = None,
 ) -> list[ScoreResult]:
-    config = settings.resolve_llm_config(provider, model)
+    config = settings.resolve_scoring_llm_config(provider, model)
     results: list[ScoreResult] = []
     for i, (article, article_id) in enumerate(items):
         try:

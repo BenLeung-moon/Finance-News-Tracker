@@ -50,9 +50,13 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("collect", help="Fetch news from all sources")
-    score_parser = sub.add_parser("score", help="Score articles with an LLM provider")
-    score_parser.add_argument("--provider", choices=["deepseek", "openai", "anthropic"])
-    score_parser.add_argument("--model", help="Override configured model for provider")
+    score_parser = sub.add_parser("score", help="Score articles with the Scoring LLM role")
+    score_parser.add_argument(
+        "--provider",
+        choices=["deepseek", "openai", "anthropic"],
+        help="Override SCORING_LLM_PROVIDER / LLM_PROVIDER",
+    )
+    score_parser.add_argument("--model", help="Override scoring model for provider")
     score_parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -61,14 +65,35 @@ def main(argv: list[str] | None = None) -> None:
 
     summarize_parser = sub.add_parser(
         "summarize",
-        help="Generate executive summary markdown",
+        help="Analyze top scored items and generate executive memo",
     )
     summarize_parser.add_argument(
         "--provider",
         choices=["deepseek", "openai", "anthropic"],
-        help="Generate a summary for a specific provider/model",
+        help="Legacy: apply to both scoring reads and analysis when role flags omitted",
     )
-    summarize_parser.add_argument("--model", help="Override configured model for provider")
+    summarize_parser.add_argument(
+        "--model",
+        help="Legacy: apply to both roles when role flags omitted",
+    )
+    summarize_parser.add_argument(
+        "--scoring-provider",
+        choices=["deepseek", "openai", "anthropic"],
+        help="Provider whose scores should be read for this memo",
+    )
+    summarize_parser.add_argument(
+        "--scoring-model",
+        help="Scoring model whose scores should be read for this memo",
+    )
+    summarize_parser.add_argument(
+        "--analysis-provider",
+        choices=["deepseek", "openai", "anthropic"],
+        help="Provider used for Analysis + memo synthesis",
+    )
+    summarize_parser.add_argument(
+        "--analysis-model",
+        help="Model used for Analysis + memo synthesis",
+    )
     summarize_parser.add_argument(
         "--write-latest-manifest",
         action="store_true",
@@ -76,16 +101,34 @@ def main(argv: list[str] | None = None) -> None:
     )
     run_once_parser = sub.add_parser(
         "run-once",
-        help="Collect, score, and summarize in one run",
+        help="Collect, score, analyze, and summarize in one run",
     )
     run_once_parser.add_argument(
         "--provider",
         choices=["deepseek", "openai", "anthropic"],
-        help="Override LLM_PROVIDER for this run",
+        help="Legacy: override both Scoring and Analysis roles",
     )
     run_once_parser.add_argument(
         "--model",
-        help="Override configured model for the selected provider",
+        help="Legacy: override both Scoring and Analysis models",
+    )
+    run_once_parser.add_argument(
+        "--scoring-provider",
+        choices=["deepseek", "openai", "anthropic"],
+        help="Override Scoring-role provider",
+    )
+    run_once_parser.add_argument(
+        "--scoring-model",
+        help="Override Scoring-role model",
+    )
+    run_once_parser.add_argument(
+        "--analysis-provider",
+        choices=["deepseek", "openai", "anthropic"],
+        help="Override Analysis-role provider",
+    )
+    run_once_parser.add_argument(
+        "--analysis-model",
+        help="Override Analysis-role model",
     )
     sub.add_parser(
         "collect-scheduled",
@@ -143,6 +186,10 @@ def main(argv: list[str] | None = None) -> None:
             report = run_summarize(
                 provider=args.provider,
                 model=args.model,
+                scoring_provider=args.scoring_provider,
+                scoring_model=args.scoring_model,
+                analysis_provider=args.analysis_provider,
+                analysis_model=args.analysis_model,
                 write_latest_manifest=(
                     True if args.write_latest_manifest else None
                 ),
@@ -153,7 +200,14 @@ def main(argv: list[str] | None = None) -> None:
                 print("No summary generated (no scored articles).", file=sys.stderr)
                 sys.exit(1)
         elif args.command == "run-once":
-            report = run_once(provider=args.provider, model=args.model)
+            report = run_once(
+                provider=args.provider,
+                model=args.model,
+                scoring_provider=args.scoring_provider,
+                scoring_model=args.scoring_model,
+                analysis_provider=args.analysis_provider,
+                analysis_model=args.analysis_model,
+            )
             if report:
                 print(f"Pipeline complete. Summary: {report.markdown_path}")
             else:

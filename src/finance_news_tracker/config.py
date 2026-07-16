@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -69,6 +69,11 @@ class Settings:
     noisy_score_limit_combined: int = 5
     dedupe_similarity_threshold: float = 0.82
     summary_max_per_source: int = 2
+    # Role-specific LLM defaults (empty string = fall back to llm_provider / provider model)
+    scoring_llm_provider: str = ""
+    scoring_llm_model: str = ""
+    analysis_llm_provider: str = ""
+    analysis_llm_model: str = ""
 
     @property
     def sources(self) -> list[SourceConfig]:
@@ -90,6 +95,19 @@ class Settings:
     def run_lock_path(self) -> Path:
         return self.data_dir / "run.lock"
 
+    def _provider_defaults(self, provider: str) -> tuple[str, str, str]:
+        """Return (model, api_key, base_url) for a provider name."""
+        selected = provider.strip().lower()
+        if selected == "deepseek":
+            return self.deepseek_model, self.deepseek_api_key, self.deepseek_base_url
+        if selected == "openai":
+            return self.openai_model, self.openai_api_key, self.openai_base_url
+        if selected == "anthropic":
+            return self.anthropic_model, self.anthropic_api_key, self.anthropic_base_url
+        raise ValueError(
+            "Unsupported LLM_PROVIDER. Expected one of: deepseek, openai, anthropic."
+        )
+
     def resolve_llm_config(
         self,
         provider: str | None = None,
@@ -98,34 +116,46 @@ class Settings:
         """Resolve None to the configured active provider, never to all providers.
 
         中文注解：`provider=None` 只代表当前默认 provider，不能代表全表混合查询。
+        保留为通用解析；角色化入口见 resolve_scoring / resolve_analysis。
         """
         from finance_news_tracker.llm import LlmConfig
 
         selected_provider = (provider or self.llm_provider).strip().lower()
-        if selected_provider == "deepseek":
-            return LlmConfig(
-                provider="deepseek",
-                model=model or self.deepseek_model,
-                api_key=self.deepseek_api_key,
-                base_url=self.deepseek_base_url,
-            )
-        if selected_provider == "openai":
-            return LlmConfig(
-                provider="openai",
-                model=model or self.openai_model,
-                api_key=self.openai_api_key,
-                base_url=self.openai_base_url,
-            )
-        if selected_provider == "anthropic":
-            return LlmConfig(
-                provider="anthropic",
-                model=model or self.anthropic_model,
-                api_key=self.anthropic_api_key,
-                base_url=self.anthropic_base_url,
-            )
-        raise ValueError(
-            "Unsupported LLM_PROVIDER. Expected one of: deepseek, openai, anthropic."
+        default_model, api_key, base_url = self._provider_defaults(selected_provider)
+        return LlmConfig(
+            provider=selected_provider,
+            model=model or default_model,
+            api_key=api_key,
+            base_url=base_url,
         )
+
+    def resolve_scoring_llm_config(
+        self,
+        provider: str | None = None,
+        model: str | None = None,
+    ):
+        """Resolve the Scoring-role LLM (high-throughput relevance filter)."""
+        selected_provider = (
+            provider
+            or self.scoring_llm_provider
+            or self.llm_provider
+        ).strip().lower()
+        selected_model = model or self.scoring_llm_model or None
+        return self.resolve_llm_config(selected_provider, selected_model)
+
+    def resolve_analysis_llm_config(
+        self,
+        provider: str | None = None,
+        model: str | None = None,
+    ):
+        """Resolve the Analysis-role LLM (impact judgment + memo synthesis)."""
+        selected_provider = (
+            provider
+            or self.analysis_llm_provider
+            or self.llm_provider
+        ).strip().lower()
+        selected_model = model or self.analysis_llm_model or None
+        return self.resolve_llm_config(selected_provider, selected_model)
 
 
 def get_settings() -> Settings:
@@ -152,6 +182,12 @@ def get_settings() -> Settings:
             os.getenv("FX_MEDIA_SCORE_LIMIT_COMBINED", "5"),
         )
     )
+    recency_override = os.getenv("RECENCY_HOURS", "").strip()
+    recency_hours = (
+        int(recency_override)
+        if recency_override
+        else active_profile.default_recency_hours
+    )
 
     return Settings(
         llm_provider=os.getenv("LLM_PROVIDER", "deepseek"),
@@ -174,7 +210,7 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         summaries_dir=summaries_dir,
         log_dir=log_dir,
-        recency_hours=int(os.getenv("RECENCY_HOURS", "72")),
+        recency_hours=recency_hours,
         min_relevance_score=int(os.getenv("MIN_RELEVANCE_SCORE", "40")),
         max_articles_to_score=int(os.getenv("MAX_ARTICLES_TO_SCORE", "25")),
         noisy_score_limit_per_source=noisy_per_source,
@@ -208,6 +244,10 @@ def get_settings() -> Settings:
         email_attach_docx=_env_bool("EMAIL_ATTACH_DOCX", True),
         tracker_profile_id=profile_id,
         active_profile=active_profile,
+        scoring_llm_provider=os.getenv("SCORING_LLM_PROVIDER", "").strip(),
+        scoring_llm_model=os.getenv("SCORING_LLM_MODEL", "").strip(),
+        analysis_llm_provider=os.getenv("ANALYSIS_LLM_PROVIDER", "").strip(),
+        analysis_llm_model=os.getenv("ANALYSIS_LLM_MODEL", "").strip(),
     )
 
 

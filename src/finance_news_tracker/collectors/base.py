@@ -10,6 +10,7 @@ from finance_news_tracker.collectors.enrich import enrich_from_html
 from finance_news_tracker.collectors.html import collect_html
 from finance_news_tracker.collectors.http import browser_headers
 from finance_news_tracker.collectors.rss import collect_rss
+from finance_news_tracker.collectors.sumitomo_archive import collect_sumitomo_archive
 from finance_news_tracker.collectors.utils import (
     content_hash,
     enrich_published_at,
@@ -47,6 +48,8 @@ def collect_all(
                     items = collect_rss(source, settings)
                 elif source.kind == "html":
                     items = collect_html(source, settings)
+                elif source.kind == "sumitomo_archive":
+                    items = collect_sumitomo_archive(source, settings)
                 else:
                     logger.warning("Unknown source kind: %s", source.kind)
                     continue

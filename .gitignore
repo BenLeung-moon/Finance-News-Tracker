@@ -11,6 +11,5 @@ build/
 *.db
 data/
 logs/
-summaries/*.md
+summaries/
 !summaries/.gitkeep
-summaries/*.docx

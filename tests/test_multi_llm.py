@@ -132,6 +132,10 @@ def test_provider_summary_does_not_overwrite_latest_manifest(monkeypatch, tmp_pa
     store.save_score(_score(aid, "openai", "gpt-5.4-mini"))
 
     monkeypatch.setattr(
+        "finance_news_tracker.summary.analyze_items_batch",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
         "finance_news_tracker.summary.generate_executive_summary_llm",
         lambda *args, **kwargs: {"market_read": "Test read", "watchlist": ["CPI"]},
     )

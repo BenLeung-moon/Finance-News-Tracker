@@ -3,10 +3,12 @@
 Multi-profile news tracker that collects fresh items from configurable sources, scores relevance with LLM providers (**DeepSeek**, **OpenAI**, or **Anthropic**), and writes an **executive summary** to `summaries/`.
 
 **Profiles:**
-- `usdjpy` (default) — USD/JPY finance news (BOJ, Nikkei Asia, NHK, Fed, US Treasury, FX media)
-- `jp_storage` — Japan energy storage ecosystem (ANRE, METI, OCCTO, trading companies, utilities, battery OEMs)
+- `usdjpy` (default) — USD/JPY finance news; default lookback **72 hours**
+- `jp_storage` — Japan energy storage ecosystem; default lookback **336 hours / 14 days**
 
 Set `TRACKER_PROFILE=usdjpy` or `TRACKER_PROFILE=jp_storage` in `.env`.
+Leave `RECENCY_HOURS` empty to use the profile default, or set it to an integer
+to override the active profile.
 
 中文注解：核心 pipeline 负责生成报告；邮件发送和 Docker/cron 部署是独立适配层，便于后续功能分支演进。
 
@@ -16,8 +18,8 @@ Set `TRACKER_PROFILE=usdjpy` or `TRACKER_PROFILE=jp_storage` in `.env`.
 |---------|---------|
 | `collect` | Fetch news from all sources |
 | `score --provider deepseek\|openai\|anthropic [--model MODEL]` | Score missing articles for one provider/model |
-| `summarize --provider deepseek\|openai\|anthropic [--model MODEL]` | Generate a summary for a specific provider/model |
-| `run-once [--provider ...] [--model MODEL]` | Collect → score → summarize (generation only, no email) |
+| `summarize [role options]` | Analyze top scored articles and generate the profile-specific memo |
+| `run-once [role options]` | Collect → score → analyze → summarize (generation only, no email) |
 | `test-llm` | Validate LLM adapter/config wiring; calls the API only when a key is set |
 | `test-email` | Send a test SMTP message to all `EMAIL_TO` recipients |
 | `send-latest-email` | Send the manifest-backed latest report |
@@ -28,10 +30,10 @@ Set `TRACKER_PROFILE=usdjpy` or `TRACKER_PROFILE=jp_storage` in `.env`.
 
 Sources are defined per profile in `src/finance_news_tracker/profiles/`.
 
-| Profile | Sources |
-|---------|---------|
-| `usdjpy` | BOJ, Nikkei Asia, NHK WORLD, Federal Reserve, US Treasury, FXStreet, Investing.com |
-| `jp_storage` | ANRE, METI, OCCTO, major trading companies, power utilities, storage/battery manufacturers (EN/JA only) |
+| Profile | Default lookback | Sources |
+|---------|------------------|---------|
+| `usdjpy` | 72 hours | BOJ, Nikkei Asia, NHK WORLD, Federal Reserve, US Treasury, FXStreet, Investing.com |
+| `jp_storage` | 336 hours (14 days) | ANRE, METI, OCCTO, major trading companies, power utilities, storage/battery manufacturers (EN/JA only) |
 
 ## Requirements
 
@@ -47,25 +49,48 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
 copy .env.example .env
-# Edit .env and set LLM_PROVIDER plus the matching API key for real LLM calls
+# Edit .env: select TRACKER_PROFILE and add the required provider API key(s)
 ```
 
 ## Local Usage
 
 ```powershell
-# Full pipeline: collect → score → summarize (no email)
+# Full pipeline using configured Scoring/Analysis roles
 python -m finance_news_tracker run-once
 
-# Override provider/model for the full pipeline:
-python -m finance_news_tracker run-once --provider deepseek --model deepseek-v4-flash
+# Use a fast Scoring model and a stronger Analysis model:
+python -m finance_news_tracker run-once `
+  --scoring-provider deepseek --scoring-model deepseek-v4-flash `
+  --analysis-provider openai --analysis-model gpt-5.4-mini
 
 # Step by step (writes latest_report.json when using --write-latest-manifest):
 python -m finance_news_tracker collect
 python -m finance_news_tracker score --provider deepseek
-python -m finance_news_tracker summarize --provider deepseek --write-latest-manifest
+python -m finance_news_tracker summarize `
+  --scoring-provider deepseek --scoring-model deepseek-v4-flash `
+  --analysis-provider openai --analysis-model gpt-5.4-mini `
+  --write-latest-manifest
 ```
 
-中文注解：`run-once` 始终会写 `summaries/latest_report.json`。分步 `summarize --provider ...` 默认不写 manifest，避免覆盖生产指针；需要 `send-latest-email` 时请显式加 `--write-latest-manifest`。
+兼容旧用法：`--provider/--model` 会同时应用于 Scoring 和 Analysis。`run-once`
+始终写 `summaries/latest_report.json`；分步 `summarize` 默认不写 manifest，
+需要交付或发邮件时请显式加 `--write-latest-manifest`。
+
+### Japan storage collection only
+
+```powershell
+# Uses the jp_storage profile default: 336 hours / 14 days.
+$env:TRACKER_PROFILE = "jp_storage"
+Remove-Item Env:RECENCY_HOURS -ErrorAction SilentlyContinue
+python -m finance_news_tracker collect
+
+# Optional one-off override, for example 7 days:
+$env:RECENCY_HOURS = "168"
+python -m finance_news_tracker collect
+```
+
+If `.env` contains `RECENCY_HOURS`, that explicit value overrides the profile
+default. Keep it empty for profile-aware behavior.
 
 Development-only model benchmark (not part of the production CLI):
 
@@ -173,6 +198,10 @@ See [`deploy/cron.example`](deploy/cron.example) for more examples.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_PROVIDER` | `deepseek` | Active/default provider when no CLI provider is passed |
+| `SCORING_LLM_PROVIDER` | empty | Scoring-role provider; falls back to `LLM_PROVIDER` |
+| `SCORING_LLM_MODEL` | empty | Scoring-role model; falls back to the provider model |
+| `ANALYSIS_LLM_PROVIDER` | empty | Analysis/memo provider; falls back to `LLM_PROVIDER` |
+| `ANALYSIS_LLM_MODEL` | empty | Analysis/memo model; falls back to the provider model |
 | `DEEPSEEK_API_KEY` | — | Required for real DeepSeek calls |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek OpenAI-compatible base URL |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model name |
@@ -185,7 +214,7 @@ See [`deploy/cron.example`](deploy/cron.example) for more examples.
 | `DATA_DIR` | `data` | SQLite and lock files |
 | `SUMMARIES_DIR` | `summaries` | Report output directory |
 | `LOG_DIR` | `logs` | Daily log files |
-| `RECENCY_HOURS` | `72` | Only keep items within this window |
+| `RECENCY_HOURS` | empty | Global override; otherwise `usdjpy=72`, `jp_storage=336` |
 | `MIN_RELEVANCE_SCORE` | `40` | Minimum score for summary inclusion |
 | `MAX_ARTICLES_TO_SCORE` | `25` | Cap scoring calls per provider per run |
 | `RUN_TIMEZONE` | `Asia/Hong_Kong` | Timezone for scheduling guard |
@@ -208,12 +237,28 @@ See [`deploy/cron.example`](deploy/cron.example) for more examples.
 ## Pipeline
 
 ```
-BOJ / Nikkei / Fed / Treasury / FXStreet / Investing.com RSS + NHK HTML
+Profile sources (RSS / HTML / source-specific collectors)
   → HTML head backfill (date/excerpt the feed omitted, e.g. Nikkei)
   → RSS HTML stripped from descriptions where needed
-  → SQLite (dedupe) → keyword prefilter → provider/model score
-  → executive summary (Markdown + Word + production latest_report.json when enabled)
+  → SQLite (dedupe) → keyword prefilter → Scoring LLM
+  → Analysis LLM (Entity / Impact / Suggested Action)
+  → profile-specific memo + Tracker (Markdown + Word + SQLite)
 ```
+
+## Handover quick reference
+
+1. Copy `.env.example` to `.env`; set `TRACKER_PROFILE` and provider API keys.
+2. Leave `RECENCY_HOURS=` empty unless a global override is intentionally required.
+3. Validate adapters with `python -m finance_news_tracker test-llm --all`.
+4. Run collection only with `python -m finance_news_tracker collect`.
+5. Run the complete workflow with `python -m finance_news_tracker run-once`.
+6. Review artifacts in `summaries/` and structured state in `data/tracker.db`.
+7. Before deployment, run `pytest`; scheduled operation remains available through
+   `collect-scheduled` and `run-scheduled`.
+
+Scoring and Analysis outputs retain their provider/model lineage. Tracker
+`Owner` and `Status` are human-managed fields and are not overwritten when
+analysis is regenerated.
 
 Optional delivery layer (separate commands):
 

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from finance_news_tracker.profiles.base import (
+    AnalysisSchema,
     ReportLabels,
     ScoringSchema,
     SourceConfig,
+    SummarySection,
     TrackerProfile,
 )
+from finance_news_tracker.profiles.summary_base import build_base_summary_profile
 
 # Common HTML exclude patterns for Japanese corporate/government news pages
 _COMMON_EXCLUDES = [
@@ -120,18 +123,137 @@ Scoring guide:
 - 0-19: Not relevant to Japan storage tracking
 """
 
-SUMMARY_SYSTEM_PROMPT = """You are a senior Japan power-market analyst writing an executive summary
-for investors and researchers tracking Japan's energy storage ecosystem.
+SUMMARY_SYSTEM_PROMPT = """You are a senior Japan power-market analyst writing a Weekly
+Intelligence Memo for a Japan BESS platform team.
 
-Write in clear English. Be concise and actionable. Cover policy/market mechanisms,
-project deployment, financing, and corporate developments. Do not claim statistical correlation.
+Write in clear English. Be concise and actionable. Cover policy, OCCTO/grid, market rules,
+competitors, and financing/M&A. Explain business implications without inventing facts.
 
 Respond with ONLY valid JSON (no markdown fences):
 {
-  "market_read": "<one paragraph overall Japan storage ecosystem read>",
+  "executive_summary": "<one paragraph overall Japan BESS platform read>",
   "watchlist": ["<upcoming event or risk 1>", "<event 2>", "..."]
 }
 """
+
+ANALYSIS_SYSTEM_PROMPT = """You are a senior Japan BESS commercial analyst.
+
+For each scored item, classify it into the memo taxonomy, name the entity involved,
+explain Impact on BESS platform strategy, and suggest an internal follow-up action.
+
+Respond with ONLY valid JSON (no markdown fences):
+{
+  "category": "<one of: policy, occto_grid, market_rules, competitors, financing_ma, other>",
+  "entity": "<company, agency, project, or n/a>",
+  "impact": "<1-2 sentences on Impact on BESS>",
+  "suggested_action": "<concrete internal follow-up, or Monitor only>"
+}
+"""
+
+_BESS_STORY_FIELDS = [
+    "takeaway",
+    "impact",
+    "suggested_action",
+    "entity",
+    "date",
+    "url",
+    "signal",
+    "relevance",
+]
+
+JP_STORAGE_SUMMARY_PROFILE = build_base_summary_profile(
+    profile_id="jp_storage_summary",
+    system_prompt=SUMMARY_SYSTEM_PROMPT,
+    narrative_field="executive_summary",
+    narrative_label="Executive Summary",
+    fallback_narrative=(
+        "Automated LLM synthesis unavailable. See categorized stories below, "
+        "scored for Japan BESS / energy storage relevance."
+    ),
+    default_watchlist=[
+        "Monitor METI/ANRE capacity market and long-term auction updates",
+        "Track JERA Cross and utility storage project COD announcements",
+        "Watch trading company and battery OEM partnership / order news",
+    ],
+    story_fields=_BESS_STORY_FIELDS,
+    replace_sections=[
+        SummarySection(
+            id="executive_summary",
+            title="Executive Summary",
+            kind="narrative",
+            narrative_field="executive_summary",
+        ),
+        SummarySection(
+            id="policy",
+            title="Key Policy Updates",
+            kind="grouped_stories",
+            category_ids=["policy", "policy_market"],
+            max_items=5,
+            item_fields=list(_BESS_STORY_FIELDS),
+        ),
+        SummarySection(
+            id="occto_grid",
+            title="OCCTO / Grid Updates",
+            kind="grouped_stories",
+            category_ids=["occto_grid"],
+            max_items=5,
+            item_fields=list(_BESS_STORY_FIELDS),
+        ),
+        SummarySection(
+            id="market_rules",
+            title="Market Rule Changes",
+            kind="grouped_stories",
+            category_ids=["market_rules"],
+            max_items=5,
+            item_fields=list(_BESS_STORY_FIELDS),
+        ),
+        SummarySection(
+            id="competitors",
+            title="Competitor Movements",
+            kind="grouped_stories",
+            category_ids=[
+                "competitors",
+                "project_deployment",
+                "corporate_activity",
+                "technology_supply_chain",
+            ],
+            max_items=5,
+            item_fields=list(_BESS_STORY_FIELDS),
+        ),
+        SummarySection(
+            id="financing_ma",
+            title="Financing / M&A / Platform Activity",
+            kind="grouped_stories",
+            category_ids=["financing_ma", "financing"],
+            max_items=5,
+            item_fields=list(_BESS_STORY_FIELDS),
+        ),
+        SummarySection(
+            id="watchlist",
+            title="Recommended Follow-ups / Watchlist",
+            kind="watchlist",
+        ),
+        SummarySection(
+            id="citations",
+            title="Source Citations",
+            kind="citations",
+            max_items=10,
+            max_items_docx=15,
+        ),
+    ],
+)
+JP_STORAGE_SUMMARY_PROFILE.category_section_map = {
+    "policy": "policy",
+    "policy_market": "policy",
+    "occto_grid": "occto_grid",
+    "market_rules": "market_rules",
+    "competitors": "competitors",
+    "project_deployment": "competitors",
+    "corporate_activity": "competitors",
+    "technology_supply_chain": "competitors",
+    "financing_ma": "financing_ma",
+    "financing": "financing_ma",
+}
 
 def _html(
     id: str,
@@ -142,8 +264,11 @@ def _html(
     languages: list[str] | None = None,
     link_patterns: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
+    allowed_domains: list[str] | None = None,
+    allow_http_statuses: list[int] | None = None,
     priority_tier: int = 2,
     url_year_templated: bool = False,
+    allow_pdf: bool = False,
 ) -> SourceConfig:
     return SourceConfig(
         id=id,
@@ -154,8 +279,54 @@ def _html(
         languages=languages or ["ja"],
         link_patterns=link_patterns or [],
         exclude_patterns=(exclude_patterns or []) + _COMMON_EXCLUDES,
+        allowed_domains=allowed_domains or [],
+        allow_http_statuses=allow_http_statuses or [],
         priority_tier=priority_tier,
         url_year_templated=url_year_templated,
+        allow_pdf=allow_pdf,
+    )
+
+
+def _rss(
+    id: str,
+    name: str,
+    url: str,
+    *,
+    languages: list[str] | None = None,
+    link_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    priority_tier: int = 2,
+) -> SourceConfig:
+    return SourceConfig(
+        id=id,
+        name=name,
+        kind="rss",
+        url=url,
+        languages=languages or ["ja"],
+        link_patterns=link_patterns or [],
+        exclude_patterns=exclude_patterns or [],
+        priority_tier=priority_tier,
+    )
+
+
+def _sumitomo_archive(
+    id: str,
+    name: str,
+    url: str,
+    *,
+    link_patterns: list[str],
+    priority_tier: int = 2,
+) -> SourceConfig:
+    return SourceConfig(
+        id=id,
+        name=name,
+        kind="sumitomo_archive",
+        url=url,
+        languages=["ja"],
+        link_patterns=link_patterns,
+        exclude_patterns=_COMMON_EXCLUDES,
+        priority_tier=priority_tier,
+        url_year_templated=True,
     )
 
 
@@ -163,34 +334,10 @@ SOURCES: list[SourceConfig] = [
     # Government — tier 4
     _html(
         "anre_news_release",
-        "ANRE (News Releases)",
-        "https://www.enecho.meti.go.jp/notice/news_release/",
-        languages=["ja"],
-        link_patterns=["/notice/", "/news_release/"],
-        priority_tier=4,
-    ),
-    _html(
-        "anre_whatsnew",
-        "ANRE (What's New)",
-        "https://www.enecho.meti.go.jp/notice/whatsnew/",
-        languages=["ja"],
-        link_patterns=["/notice/", "/whatsnew/"],
-        priority_tier=4,
-    ),
-    _html(
-        "anre_basic_plan",
-        "ANRE (Energy Basic Plan)",
-        "https://www.enecho.meti.go.jp/category/others/basic_plan/",
-        languages=["ja"],
-        link_patterns=["/category/", "/basic_plan/"],
-        priority_tier=4,
-    ),
-    _html(
-        "meti_energy_press_ja",
-        "METI (Energy & Environment Press, JA)",
+        "ANRE/METI (Energy & Environment Press, JA)",
         "https://www.meti.go.jp/press/category_05.html",
         languages=["ja"],
-        link_patterns=["/press/", "category_05"],
+        link_patterns=["/press/"],
         priority_tier=4,
     ),
     _html(
@@ -201,12 +348,22 @@ SOURCES: list[SourceConfig] = [
         link_patterns=["/english/press/", "category_05"],
         priority_tier=4,
     ),
-    _html(
-        "occto_press",
-        "OCCTO (Press Releases)",
-        "https://www.occto.or.jp/pressrelease/",
+    _rss(
+        "occto_rss",
+        "OCCTO (News RSS)",
+        "https://www.occto.or.jp/news/feed.xml",
         languages=["ja"],
-        link_patterns=["/pressrelease/", "/press/"],
+        link_patterns=["/news/", "/iinkai/", "/houkokusho/", "/iken/"],
+        priority_tier=4,
+    ),
+    _html(
+        "occto_news",
+        "OCCTO (News)",
+        "https://www.occto.or.jp/",
+        languages=["ja"],
+        link_patterns=["/news/"],
+        exclude_patterns=["/iinkai/", "/nyusatsu/", "/iken/"],
+        allow_http_statuses=[404],
         priority_tier=4,
     ),
     # Trading companies — tier 2
@@ -244,12 +401,13 @@ SOURCES: list[SourceConfig] = [
         link_patterns=["/news/"],
         priority_tier=2,
     ),
-    _html(
+    _rss(
         "itochu_press",
         "Itochu (Press Release)",
-        "https://www.itochu.co.jp/ja/news/press/index.html",
+        "https://www.itochu.co.jp/ja/news/press/index.xml",
         languages=["ja"],
         link_patterns=["/news/press/"],
+        exclude_patterns=["/ja/ir/", ".pdf"],
         priority_tier=2,
     ),
     _html(
@@ -260,13 +418,11 @@ SOURCES: list[SourceConfig] = [
         link_patterns=["/news/chemical/"],
         priority_tier=2,
     ),
-    _html(
+    _sumitomo_archive(
         "sumitomo_release",
         "Sumitomo Corp (Release)",
         "https://www.sumitomocorp.com/ja/jp/news/release/{year}",
-        languages=["ja"],
         link_patterns=["/news/release/"],
-        url_year_templated=True,
         priority_tier=2,
     ),
     _html(
@@ -278,13 +434,11 @@ SOURCES: list[SourceConfig] = [
         url_year_templated=True,
         priority_tier=2,
     ),
-    _html(
+    _sumitomo_archive(
         "sumitomo_topics",
         "Sumitomo Corp (Topics)",
         "https://www.sumitomocorp.com/ja/jp/news/topics/{year}",
-        languages=["ja"],
         link_patterns=["/news/topics/"],
-        url_year_templated=True,
         priority_tier=2,
     ),
     _html(
@@ -354,6 +508,7 @@ SOURCES: list[SourceConfig] = [
         "https://www.tepco.co.jp/press/release/index-j.html",
         languages=["ja"],
         link_patterns=["/press/release/"],
+        allow_pdf=True,
         priority_tier=3,
     ),
     _html(
@@ -362,6 +517,7 @@ SOURCES: list[SourceConfig] = [
         "https://www.tepco.co.jp/press/news/index-j.html",
         languages=["ja"],
         link_patterns=["/press/news/"],
+        allow_pdf=True,
         priority_tier=3,
     ),
     _html(
@@ -421,12 +577,12 @@ SOURCES: list[SourceConfig] = [
         link_patterns=["/renewable-energy/", "/news"],
         priority_tier=2,
     ),
-    _html(
+    _rss(
         "panasonic_energy_news",
         "Panasonic Energy (News)",
-        "https://www.panasonic.com/jp/energy/news.html",
+        "https://www.panasonic.com/content/dam/panasonic/jp/ja/energy/news/news_jp.xml",
         languages=["ja"],
-        link_patterns=["/energy/news"],
+        link_patterns=["news.panasonic.com/jp/"],
         priority_tier=2,
     ),
     _html(
@@ -442,7 +598,16 @@ SOURCES: list[SourceConfig] = [
         "Hitachi Power Solutions (News)",
         "https://www.hitachi-power-solutions.com/topics/news/index.html",
         languages=["ja"],
-        link_patterns=["/topics/news/"],
+        link_patterns=[
+            "/press/articles/",
+            "/New/cnews/month/",
+            "/corporate/news/",
+        ],
+        allowed_domains=[
+            "www.hitachi.com",
+            "www.hitachi.co.jp",
+            "www.hitachi-solutions-tech.co.jp",
+        ],
         priority_tier=2,
     ),
 ]
@@ -452,6 +617,8 @@ SOURCE_LABELS = {s.id: s.name for s in SOURCES}
 PROFILE = TrackerProfile(
     id="jp_storage",
     name="Japan Energy Storage Ecosystem",
+    # 政策、并网和项目公告频率较低，默认回看两周，避免周度运行漏报。
+    default_recency_hours=14 * 24,
     keyword_tiers={
         "policy": _POLICY_KEYWORDS,
         "project": _PROJECT_KEYWORDS,
@@ -472,33 +639,42 @@ PROFILE = TrackerProfile(
         signal_options=["positive", "negative", "neutral", "n/a"],
     ),
     summary_system_prompt=SUMMARY_SYSTEM_PROMPT,
+    summary_profile=JP_STORAGE_SUMMARY_PROFILE,
+    analysis_system_prompt=ANALYSIS_SYSTEM_PROMPT,
+    analysis_schema=AnalysisSchema(
+        category_options=[
+            "policy",
+            "occto_grid",
+            "market_rules",
+            "competitors",
+            "financing_ma",
+            "other",
+        ],
+    ),
     noisy_source_ids=frozenset(),
     report_labels=ReportLabels(
-        report_title="Japan Energy Storage Executive Summary",
+        report_title="Japan BESS Weekly Intelligence Memo",
         filename_prefix="jp_storage_summary",
         sources_line=(
             "ANRE, METI, OCCTO, trading companies, power utilities, "
             "and storage/battery manufacturers"
         ),
+        market_read_label="Executive Summary",
         why_it_matters_label="Why it matters",
         category_label="Category",
         signal_label="Signal",
+        impact_label="Impact on BESS",
+        suggested_action_label="Suggested Action",
+        entity_label="Entity",
         signal_display={
             "positive": "Positive",
             "negative": "Negative",
             "neutral": "Neutral",
             "n/a": "N/A",
         },
-        default_watchlist=[
-            "Monitor METI/ANRE capacity market and long-term auction updates",
-            "Track JERA Cross and utility storage project COD announcements",
-            "Watch trading company and battery OEM partnership / order news",
-        ],
+        default_watchlist=list(JP_STORAGE_SUMMARY_PROFILE.default_watchlist),
         source_labels=SOURCE_LABELS,
-        fallback_market_read=(
-            "Automated LLM synthesis unavailable. See ranked stories below, "
-            "scored for Japan energy storage ecosystem relevance."
-        ),
+        fallback_market_read=JP_STORAGE_SUMMARY_PROFILE.fallback_narrative,
     ),
     title_fallback_rules=[],
     boilerplate_terms=["breaking", "update", "live", "analysis"],

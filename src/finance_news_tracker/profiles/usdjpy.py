@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from finance_news_tracker.profiles.base import (
+    AnalysisSchema,
     ReportLabels,
     ScoringSchema,
     SourceConfig,
@@ -162,6 +163,21 @@ Respond with ONLY valid JSON (no markdown fences):
 }
 """
 
+ANALYSIS_SYSTEM_PROMPT = """You are a senior FX strategist judging commercial / trading
+impact of scored USD/JPY news items.
+
+Identify the key entity (central bank, agency, or market theme), explain transmission
+to USD/JPY, and suggest a concrete follow-up for desk monitoring.
+
+Respond with ONLY valid JSON (no markdown fences):
+{
+  "category": "<one of: monetary_policy, rates_differential, inflation, intervention, risk_sentiment, trade_commodities, growth_data, fiscal_policy, other>",
+  "entity": "<BOJ/Fed/Treasury/market theme, or n/a>",
+  "impact": "<1-2 sentences on USD/JPY transmission>",
+  "suggested_action": "<desk follow-up, or Monitor only>"
+}
+"""
+
 SOURCES: list[SourceConfig] = [
     SourceConfig(
         id="boj_whatsnew",
@@ -267,6 +283,7 @@ SOURCE_LABELS = {
 PROFILE = TrackerProfile(
     id="usdjpy",
     name="USD/JPY Finance News",
+    default_recency_hours=72,
     keyword_tiers={
         "general": GENERAL_KEYWORDS,
         "direct": DIRECT_KEYWORDS,
@@ -290,6 +307,20 @@ PROFILE = TrackerProfile(
         signal_options=["usd_jpy_up", "usd_jpy_down", "mixed", "unclear"],
     ),
     summary_system_prompt=SUMMARY_SYSTEM_PROMPT,
+    analysis_system_prompt=ANALYSIS_SYSTEM_PROMPT,
+    analysis_schema=AnalysisSchema(
+        category_options=[
+            "monetary_policy",
+            "rates_differential",
+            "inflation",
+            "intervention",
+            "risk_sentiment",
+            "trade_commodities",
+            "growth_data",
+            "fiscal_policy",
+            "other",
+        ],
+    ),
     noisy_source_ids=frozenset({"fxstreet_news", "investing_forex"}),
     report_labels=ReportLabels(
         report_title="USD/JPY Executive Summary",
