@@ -6,7 +6,7 @@ def test_jp_storage_source_domains():
     profile = get_profile("jp_storage")
     domains = set()
     for source in profile.sources:
-        assert source.kind in {"html", "rss", "sumitomo_archive"}
+        assert source.kind in {"enehub", "html", "rss", "sumitomo_archive"}
         assert source.languages
         for lang in source.languages:
             assert lang in {"en", "ja"}
@@ -15,6 +15,8 @@ def test_jp_storage_source_domains():
         domains.add(source.url.split("/")[2])
     assert "www.meti.go.jp" in domains
     assert "www.jera-cross.com" in domains
+    assert "enehub.jp" in domains
+    assert "japanenergyhub.com" in domains
 
 
 def test_usdjpy_profile_has_nine_sources():

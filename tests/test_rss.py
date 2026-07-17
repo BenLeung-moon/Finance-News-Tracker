@@ -1,4 +1,4 @@
-from finance_news_tracker.collectors.rss import _entry_allowed, _strip_html
+from finance_news_tracker.collectors.rss import _clean_summary, _entry_allowed, _feed_content, _strip_html
 from finance_news_tracker.profiles.base import SourceConfig
 
 
@@ -9,6 +9,22 @@ def test_strip_html_removes_tags():
 
 def test_strip_html_plain_text_unchanged():
     assert _strip_html("Plain headline only") == "Plain headline only"
+
+
+def test_feed_content_extracts_and_cleans_full_text():
+    entry = {
+        "content": [{"value": "<p>Full <strong>article</strong> text.</p>"}],
+        "summary": "<p>Short excerpt.</p>",
+    }
+
+    assert _feed_content(entry) == "Full article text."
+
+
+def test_feed_content_falls_back_to_empty_without_content_block():
+    entry = {"summary": "<p>Short excerpt.</p>"}
+
+    assert _feed_content(entry) == ""
+    assert _clean_summary(entry) == "Short excerpt."
 
 
 def test_rss_entry_allowed_respects_patterns_and_excludes():

@@ -50,6 +50,16 @@ def _clean_summary(entry: dict) -> str:
     return _strip_html(str(summary))[:2000]
 
 
+def _feed_content(entry: dict) -> str:
+    """Extract the first full-text RSS/Atom content block when the feed supplies one."""
+    content = entry.get("content") or []
+    if not content:
+        return ""
+    first = content[0]
+    value = first.get("value", "") if hasattr(first, "get") else ""
+    return _strip_html(str(value))[:12000]
+
+
 def _entry_allowed(source: SourceConfig, title: str, url: str) -> bool:
     for pat in source.exclude_patterns:
         if pat and (pat in url or pat in title):
@@ -80,7 +90,11 @@ def collect_rss(source: SourceConfig, settings: Settings) -> list[Article]:
         published_at = _parse_published(entry)
         # Nikkei Asia 等源 RSS 常无日期字段：保留 None，不再伪造 now()。
         # 时效与排序改用 collected_at（首次抓取时刻）作近似，避免旧文被当成刚发布。
-        summary = _clean_summary(entry)
+        summary = (
+            _feed_content(entry)
+            if source.prefer_feed_content
+            else ""
+        ) or _clean_summary(entry)
         article = Article(
             source=source.id,
             title=title,

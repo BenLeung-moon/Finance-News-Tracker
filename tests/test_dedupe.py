@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from finance_news_tracker.config import get_settings
 from finance_news_tracker.dedupe import (
     articles_similar,
+    cross_language_articles_similar,
     dedupe_articles,
     diversify_scored_items,
     normalize_text,
@@ -37,6 +38,81 @@ def test_articles_similar_cross_source():
         url="https://investing.com/1",
     )
     assert articles_similar(left, right, 0.82, settings)
+
+
+def test_cross_language_dedupe_matches_shared_entity_and_capacity(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    published = datetime(2026, 7, 6, tzinfo=timezone.utc)
+    english = Article(
+        source="japan_energy_hub",
+        title=(
+            "IBeeT, Tokyu Land, Akaysha begin construction "
+            "of 20MW/82MWh Fukuoka BESS project"
+        ),
+        url="https://japanenergyhub.com/news/ibeet-fukuoka-bess/",
+        published_at=published,
+    )
+    japanese = Article(
+        source="enehub_jp",
+        title="IBeeT・東急不動産・Akaysha、福岡県飯塚市で20MW/82MWh蓄電所を着工",
+        url="https://enehub.jp/news/ibeet-fukuoka-bess/",
+        published_at=published,
+    )
+
+    assert cross_language_articles_similar(english, japanese)
+    assert articles_similar(english, japanese, 0.82, settings)
+
+
+def test_cross_language_dedupe_rejects_generic_or_distant_matches(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    english = Article(
+        source="japan_energy_hub",
+        title="A developer begins 20MW battery storage construction",
+        url="https://japanenergyhub.com/news/a/",
+        published_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    unrelated = Article(
+        source="enehub_jp",
+        title="別事業者、北海道で20MW蓄電所の建設を開始",
+        url="https://enehub.jp/news/b/",
+        published_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+    )
+    distant = Article(
+        source="enehub_jp",
+        title="Akaysha、福岡県で20MW/82MWh蓄電所を着工",
+        url="https://enehub.jp/news/c/",
+        published_at=datetime(2026, 7, 12, tzinfo=timezone.utc),
+    )
+    matching_english = Article(
+        source="japan_energy_hub",
+        title="Akaysha begins 20MW/82MWh Fukuoka battery project",
+        url="https://japanenergyhub.com/news/d/",
+        published_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+
+    assert not cross_language_articles_similar(english, unrelated)
+    assert not cross_language_articles_similar(matching_english, distant)
+    assert not articles_similar(english, unrelated, 0.82, settings)
+
+
+def test_cross_language_dedupe_decodes_html_entities_in_identifiers():
+    published = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    english = Article(
+        source="japan_energy_hub",
+        title="au Renewable Energy considers ORIX grid-scale battery O&amp;M",
+        url="https://japanenergyhub.com/news/au-orix/",
+        published_at=published,
+    )
+    japanese = Article(
+        source="enehub_jp",
+        title="au、ORIX子会社に蓄電所のO&M委託を検討",
+        url="https://enehub.jp/news/au-orix/",
+        published_at=published,
+    )
+
+    assert cross_language_articles_similar(english, japanese)
 
 
 def test_dedupe_keeps_official_over_media():

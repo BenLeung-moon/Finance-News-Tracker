@@ -296,6 +296,7 @@ def _rss(
     link_patterns: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
     priority_tier: int = 2,
+    prefer_feed_content: bool = False,
 ) -> SourceConfig:
     return SourceConfig(
         id=id,
@@ -306,6 +307,7 @@ def _rss(
         link_patterns=link_patterns or [],
         exclude_patterns=exclude_patterns or [],
         priority_tier=priority_tier,
+        prefer_feed_content=prefer_feed_content,
     )
 
 
@@ -365,6 +367,26 @@ SOURCES: list[SourceConfig] = [
         exclude_patterns=["/iinkai/", "/nyusatsu/", "/iken/"],
         allow_http_statuses=[404],
         priority_tier=4,
+    ),
+    # Japan energy-sector media — tier 2
+    SourceConfig(
+        id="enehub_jp",
+        name="エネハブ (News)",
+        kind="enehub",
+        url="https://enehub.jp/news/",
+        languages=["ja"],
+        link_patterns=["/news/"],
+        exclude_patterns=["?e-page-"],
+        priority_tier=2,
+    ),
+    _rss(
+        "japan_energy_hub",
+        "Japan Energy Hub (News RSS)",
+        "https://japanenergyhub.com/feed/?post_type=news",
+        languages=["en"],
+        link_patterns=["/news/"],
+        priority_tier=2,
+        prefer_feed_content=True,
     ),
     # Trading companies — tier 2
     _html(

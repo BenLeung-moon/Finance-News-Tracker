@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 
 from finance_news_tracker.config import Settings
+from finance_news_tracker.collectors.enehub import collect_enehub
 from finance_news_tracker.collectors.enrich import enrich_from_html
 from finance_news_tracker.collectors.html import collect_html
 from finance_news_tracker.collectors.http import browser_headers
@@ -48,6 +49,8 @@ def collect_all(
                     items = collect_rss(source, settings)
                 elif source.kind == "html":
                     items = collect_html(source, settings)
+                elif source.kind == "enehub":
+                    items = collect_enehub(source, settings)
                 elif source.kind == "sumitomo_archive":
                     items = collect_sumitomo_archive(source, settings)
                 else:

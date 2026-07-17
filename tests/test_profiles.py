@@ -69,6 +69,14 @@ def test_jp_storage_uses_planned_source_fallbacks():
     assert sources["sumitomo_topics"].kind == "sumitomo_archive"
     assert "www.hitachi.co.jp" in sources["hitachi_power_solutions_press"].allowed_domains
     assert sources["anre_news_release"].url == "https://www.meti.go.jp/press/category_05.html"
+    assert sources["enehub_jp"].kind == "enehub"
+    assert sources["enehub_jp"].languages == ["ja"]
+    assert sources["japan_energy_hub"].kind == "rss"
+    assert sources["japan_energy_hub"].url == (
+        "https://japanenergyhub.com/feed/?post_type=news"
+    )
+    assert sources["japan_energy_hub"].languages == ["en"]
+    assert sources["japan_energy_hub"].prefer_feed_content
 
 
 def test_profiles_expose_summary_and_analysis_contracts():

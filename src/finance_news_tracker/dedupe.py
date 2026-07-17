@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from difflib import SequenceMatcher
+from html import unescape
 
 from typing import Any
 
 from finance_news_tracker.config import Settings
 from finance_news_tracker.models import Article
+
+_CROSS_LANGUAGE_SOURCES = frozenset({"enehub_jp", "japan_energy_hub"})
+_LATIN_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9&.-]{2,}")
+_CAPACITY_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mw|mwh|gw|gwh)", re.I)
+_GENERIC_CROSS_LANGUAGE_TOKENS = frozenset(
+    {"bess", "energy", "fip", "grid", "mwh", "mw", "news", "ppa", "project"}
+)
 
 
 def is_noisy_source(source_id: str, settings: Settings) -> bool:
@@ -53,6 +62,40 @@ def text_similarity(a: str, b: str, settings: Settings) -> float:
     return SequenceMatcher(None, na, nb).ratio()
 
 
+def _latin_identifiers(text: str) -> set[str]:
+    return {
+        token.lower()
+        for token in _LATIN_TOKEN_PATTERN.findall(unescape(text))
+        if token.lower() not in _GENERIC_CROSS_LANGUAGE_TOKENS
+    }
+
+
+def _capacity_values(text: str) -> set[str]:
+    return {match.group(1) for match in _CAPACITY_PATTERN.finditer(text)}
+
+
+def cross_language_articles_similar(left: Article, right: Article) -> bool:
+    """Conservatively match known EN/JA source pairs on facts, not translation guesses.
+
+    中文注解：日英文本无法由字符相似度可靠比较；只在发布时间接近，且有共享实体
+    标识或实体加容量等可验证事实时，才将两篇文章视为同一事件。
+    """
+    if {left.source, right.source} != _CROSS_LANGUAGE_SOURCES:
+        return False
+    if left.published_at is None or right.published_at is None:
+        return False
+    if abs(left.published_at - right.published_at) > timedelta(days=4):
+        return False
+
+    left_title, right_title = left.title, right.title
+    identifiers = _latin_identifiers(left_title) & _latin_identifiers(right_title)
+    if len(identifiers) >= 2:
+        return True
+
+    capacities = _capacity_values(left_title) & _capacity_values(right_title)
+    return bool(identifiers and capacities)
+
+
 def articles_similar(
     left: Article,
     right: Article,
@@ -63,7 +106,9 @@ def articles_similar(
     blob_r = article_text_blob(right)
     if text_similarity(blob_l, blob_r, settings) >= threshold:
         return True
-    return text_similarity(left.title, right.title, settings) >= threshold
+    if text_similarity(left.title, right.title, settings) >= threshold:
+        return True
+    return cross_language_articles_similar(left, right)
 
 
 def pick_representative(

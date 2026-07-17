@@ -23,6 +23,8 @@ class SourceConfig:
     is_noisy: bool = False
     url_year_templated: bool = False
     allow_pdf: bool = False
+    # Prefer RSS `content:encoded` to short feed summaries when available.
+    prefer_feed_content: bool = False
 
 
 @dataclass
