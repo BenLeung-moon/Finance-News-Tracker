@@ -2,7 +2,11 @@ from datetime import datetime, timezone
 
 from finance_news_tracker.config import get_settings
 from finance_news_tracker.models import Article
-from finance_news_tracker.prefilter import prefilter_article, rank_for_scoring
+from finance_news_tracker.prefilter import (
+    _source_entity_boost,
+    prefilter_article,
+    rank_for_scoring,
+)
 
 
 def test_prefilter_hits_fx_keyword():
@@ -137,3 +141,121 @@ def test_rank_limits_results():
     ]
     ranked = rank_for_scoring(articles, settings)
     assert len(ranked) == 2
+
+
+def test_jp_storage_tokyo_gas_tolling_english(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    article = Article(
+        source="japan_energy_hub",
+        title="Tokyo Gas signs a tolling agreement for grid storage",
+        url="https://example.com/tokyo-gas-tolling",
+        published_at=datetime.now(timezone.utc),
+    )
+    hit, hits = prefilter_article(article, settings)
+    assert hit is True
+    assert "Tokyo Gas" in hits
+    assert "tolling agreement" in hits
+
+
+def test_jp_storage_tokyo_gas_tolling_japanese(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    article = Article(
+        source="enehub_jp",
+        title="東京ガスがトーリング契約を締結",
+        url="https://example.com/tokyo-gas-ja",
+        published_at=datetime.now(timezone.utc),
+    )
+    hit, hits = prefilter_article(article, settings)
+    assert hit is True
+    assert "東京ガス" in hits
+    assert "トーリング契約" in hits
+
+
+def test_jeh_epc_bonus_entity_only(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    article = Article(
+        source="japan_energy_hub",
+        title="TESS Engineering announces corporate restructuring",
+        url="https://example.com/tess-only",
+        published_at=datetime.now(timezone.utc),
+    )
+    bonus, signals = _source_entity_boost(article, settings)
+    assert bonus == 1
+    assert "epc:TESS Engineering" in signals
+    assert not any(s.startswith("epc_context:") for s in signals)
+
+
+def test_jeh_epc_bonus_with_context(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    article = Article(
+        source="japan_energy_hub",
+        title="TESS Engineering wins battery storage EPC contract",
+        url="https://example.com/tess-bess",
+        published_at=datetime.now(timezone.utc),
+    )
+    bonus, signals = _source_entity_boost(article, settings)
+    assert bonus == 2
+    assert "epc:TESS Engineering" in signals
+    assert any(s.startswith("epc_context:") for s in signals)
+
+
+def test_epc_bonus_other_source_zero(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    article = Article(
+        source="enehub_jp",
+        title="TESS Engineering wins battery storage EPC contract",
+        url="https://example.com/tess-other-source",
+        published_at=datetime.now(timezone.utc),
+    )
+    bonus, signals = _source_entity_boost(article, settings)
+    assert bonus == 0
+    assert signals == []
+
+
+def test_jeh_unknown_company_no_bonus(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    article = Article(
+        source="japan_energy_hub",
+        title="Acme Corp announces battery storage project in Japan",
+        url="https://example.com/unknown-co",
+        published_at=datetime.now(timezone.utc),
+    )
+    bonus, signals = _source_entity_boost(article, settings)
+    assert bonus == 0
+    assert signals == []
+
+
+def test_jeh_kajima_building_news_entity_only(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+    settings = get_settings()
+    article = Article(
+        source="japan_energy_hub",
+        title="Kajima completes downtown office tower renovation",
+        url="https://example.com/kajima-building",
+        published_at=datetime.now(timezone.utc),
+    )
+    bonus, signals = _source_entity_boost(article, settings)
+    assert bonus == 1
+    assert "epc:Kajima" in signals
+    assert not any(s.startswith("epc_context:") for s in signals)
+
+
+def test_usdjpy_no_jp_storage_epc_boost(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "usdjpy")
+    settings = get_settings()
+    article = Article(
+        source="japan_energy_hub",
+        title="Tokyo Gas and TESS Engineering battery storage EPC",
+        url="https://example.com/usdjpy-no-boost",
+        published_at=datetime.now(timezone.utc),
+    )
+    bonus, signals = _source_entity_boost(article, settings)
+    assert bonus == 0
+    assert signals == []
+    assert settings.active_profile.source_entity_boost_rules == []

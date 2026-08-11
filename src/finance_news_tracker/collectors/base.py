@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 
 from finance_news_tracker.config import Settings
+from finance_news_tracker.collectors.byd_energy import collect_byd_energy
 from finance_news_tracker.collectors.enehub import collect_enehub
 from finance_news_tracker.collectors.enrich import enrich_from_html
 from finance_news_tracker.collectors.html import collect_html
@@ -53,6 +54,8 @@ def collect_all(
                     items = collect_enehub(source, settings)
                 elif source.kind == "sumitomo_archive":
                     items = collect_sumitomo_archive(source, settings)
+                elif source.kind == "byd_energy":
+                    items = collect_byd_energy(source, settings)
                 else:
                     logger.warning("Unknown source kind: %s", source.kind)
                     continue

@@ -121,6 +121,46 @@ def _extract_date_from_context(link, page_url: str) -> datetime | None:
     return parse_date_from_text(page_url)
 
 
+def _parse_selector_date(text: str, formats: list[str]) -> datetime | None:
+    """Parse date text with explicit strptime formats (profile-configured)."""
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return None
+    for fmt in formats:
+        try:
+            return datetime.strptime(cleaned, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_title(link, source: SourceConfig) -> str:
+    """Prefer title_selector inside the anchor; fall back to full link text."""
+    if source.title_selector:
+        el = link.select_one(source.title_selector)
+        if el:
+            title = el.get_text(" ", strip=True)
+            if title:
+                return title
+    return link.get_text(strip=True)
+
+
+def _extract_published_at(link, source: SourceConfig, page_url: str) -> datetime | None:
+    """Prefer date_selector + date_formats; fall back to context/URL parsing."""
+    if source.date_selector:
+        el = link.select_one(source.date_selector)
+        if el:
+            date_text = el.get_text(" ", strip=True)
+            if source.date_formats:
+                parsed = _parse_selector_date(date_text, source.date_formats)
+                if parsed:
+                    return parsed
+            parsed = parse_date_from_text(date_text)
+            if parsed:
+                return parsed
+    return _extract_date_from_context(link, page_url)
+
+
 def _extract_from_page(
     soup: BeautifulSoup, source: SourceConfig, page_url: str
 ) -> list[Article]:
@@ -133,7 +173,7 @@ def _extract_from_page(
         if not _link_allowed(href, source, page_url):
             continue
 
-        title = link.get_text(strip=True)
+        title = _extract_title(link, source)
         if not title or len(title) < MIN_TITLE_LEN:
             continue
         if title.lower().startswith(SKIP_TITLE_PREFIXES):
@@ -146,7 +186,7 @@ def _extract_from_page(
 
         parent = _context_parent(link)
         context = parent.get_text(" ", strip=True) if parent else ""
-        published_at = _extract_date_from_context(link, page_url)
+        published_at = _extract_published_at(link, source, page_url)
 
         articles.append(
             Article(

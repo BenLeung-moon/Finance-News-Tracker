@@ -25,6 +25,30 @@ class SourceConfig:
     allow_pdf: bool = False
     # Prefer RSS `content:encoded` to short feed summaries when available.
     prefer_feed_content: bool = False
+    # Optional CSS selectors for card-style HTML list pages (title/date inside <a>).
+    # Empty = legacy behaviour: use the whole anchor text + context date parsing.
+    # 中文注解：卡片式列表页用选择器精确取标题/日期，未配置时保持原行为。
+    title_selector: str = ""
+    date_selector: str = ""
+    date_formats: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SourceEntityBoostRule:
+    """Source-scoped entity match that lightly boosts candidate ranking.
+
+    Used e.g. for Japan Energy Hub EPC names: bonus applies only when
+    ``article.source == source_id`` and text matches an alias. Does NOT
+    alter LLM ``relevance_score`` or force prefilter pass.
+    中文注解：来源限定的实体次级加权，只影响候选排序，不改 LLM 分数。
+    """
+
+    source_id: str
+    entity_aliases: dict[str, list[str]]
+    context_keywords: list[str] = field(default_factory=list)
+    entity_bonus: int = 1
+    context_bonus: int = 1
+    max_bonus: int = 2
 
 
 @dataclass
@@ -139,6 +163,8 @@ class TrackerProfile:
     summary_profile: SummaryProfile | None = None
     analysis_system_prompt: str = ""
     analysis_schema: AnalysisSchema = field(default_factory=AnalysisSchema)
+    # Source-scoped entity ranking boosts (e.g. JEH EPC names); empty for most profiles.
+    source_entity_boost_rules: list[SourceEntityBoostRule] = field(default_factory=list)
 
     def source_by_id(self) -> dict[str, SourceConfig]:
         return {s.id: s for s in self.sources}

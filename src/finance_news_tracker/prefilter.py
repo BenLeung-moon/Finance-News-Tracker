@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from datetime import datetime, timezone
@@ -12,6 +13,8 @@ from finance_news_tracker.dedupe import (
     source_priority_tier,
 )
 from finance_news_tracker.models import Article, ScoredArticle
+
+logger = logging.getLogger(__name__)
 
 
 def keyword_hits(text: str, keywords: list[str]) -> list[str]:
@@ -51,12 +54,23 @@ def _noisy_prefilter(blob: str, settings: Settings) -> tuple[bool, list[str]]:
 
 
 def _storage_prefilter(blob: str, settings: Settings) -> tuple[bool, list[str]]:
-    """Keyword gate for jp_storage profile (policy/project/company tiers)."""
+    """Keyword gate for jp_storage profile (policy/project/company/entity tiers).
+
+    Hits are accumulated across tiers (union) so dry-run / tests can see every
+    matched phrase (e.g. both Tokyo Gas and tolling agreement).
+    中文注解：跨 tier 累积命中，不因首个 tier 命中就提前返回。
+    """
     profile = settings.active_profile
-    for tier in ("policy", "project", "company"):
-        hits = keyword_hits(blob, _tier_keywords(profile, tier))
-        if hits:
-            return True, hits
+    all_hits: list[str] = []
+    seen: set[str] = set()
+    for tier in ("policy", "project", "company", "entity"):
+        for hit in keyword_hits(blob, _tier_keywords(profile, tier)):
+            key = hit.lower()
+            if key not in seen:
+                seen.add(key)
+                all_hits.append(hit)
+    if all_hits:
+        return True, all_hits
     general = keyword_hits(blob, _tier_keywords(profile, "general"))
     return (bool(general), general)
 
@@ -91,7 +105,67 @@ def prefilter_article(article: Article, settings: Settings) -> tuple[bool, list[
     return False, []
 
 
-def _priority_for_article(article: Article, hit: bool, hits: list[str], settings: Settings) -> int:
+def _source_entity_boost(
+    article: Article,
+    settings: Settings,
+) -> tuple[int, list[str]]:
+    """Apply profile-configured source-scoped entity ranking bonuses.
+
+    Returns (bonus, matched_signals). Does not force prefilter pass and does
+    not modify LLM relevance_score.
+    中文注解：仅按规则来源 ID 匹配实体别名；可选再叠 BESS/EPC 上下文加权。
+    """
+    blob = " ".join(
+        filter(
+            None,
+            [article.title, article.summary, article.raw_excerpt],
+        )
+    )
+    lower = blob.lower()
+    total_bonus = 0
+    signals: list[str] = []
+
+    for rule in settings.active_profile.source_entity_boost_rules:
+        if article.source != rule.source_id:
+            continue
+
+        matched_entity: str | None = None
+        for entity_name, aliases in rule.entity_aliases.items():
+            if any(alias.lower() in lower for alias in aliases):
+                matched_entity = entity_name
+                break
+        if matched_entity is None:
+            continue
+
+        bonus = rule.entity_bonus
+        signals.append(f"source_boost:{rule.source_id}")
+        signals.append(f"epc:{matched_entity}")
+
+        context_hit: str | None = None
+        for kw in rule.context_keywords:
+            if kw.lower() in lower:
+                context_hit = kw
+                break
+        if context_hit is not None:
+            bonus += rule.context_bonus
+            signals.append(f"epc_context:{context_hit}")
+
+        bonus = min(bonus, rule.max_bonus)
+        total_bonus += bonus
+
+    return total_bonus, signals
+
+
+def _priority_for_article(
+    article: Article,
+    hit: bool,
+    hits: list[str],
+    settings: Settings,
+) -> tuple[int, int, list[str]]:
+    """Compute candidate priority and optional boost audit signals.
+
+    Returns (final_priority, applied_boost, boost_signals).
+    """
     profile = settings.active_profile
     priority = len(hits)
 
@@ -111,7 +185,9 @@ def _priority_for_article(article: Article, hit: bool, hits: list[str], settings
     if is_noisy_source(article.source, settings):
         priority = max(0, priority - 1)
 
-    return priority
+    boost, signals = _source_entity_boost(article, settings)
+    priority += boost
+    return priority, boost, signals
 
 
 def rank_for_scoring(
@@ -125,7 +201,20 @@ def rank_for_scoring(
         hit, hits = prefilter_article(article, settings)
         if is_noisy_source(article.source, settings) and not hit:
             continue
-        priority = _priority_for_article(article, hit, hits, settings)
+        priority, applied_boost, boost_signals = _priority_for_article(
+            article, hit, hits, settings
+        )
+        if boost_signals:
+            logger.info(
+                "source_entity_boost article_id=%s source=%s signals=%s "
+                "base_priority=%s applied_bonus=%s final_priority=%s",
+                article_id,
+                article.source,
+                boost_signals,
+                priority - applied_boost,
+                applied_boost,
+                priority,
+            )
         scored.append((article, article_id, priority, hits))
 
     now = datetime.now(timezone.utc)

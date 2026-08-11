@@ -1,6 +1,10 @@
 from finance_news_tracker.config import get_settings
-from finance_news_tracker.profiles import get_active_profile, get_profile, list_profiles
-from finance_news_tracker.profiles.jp_storage import PROFILE as JP_STORAGE
+from finance_news_tracker.profiles import get_profile, list_profiles
+from finance_news_tracker.profiles.jp_storage import (
+    PROFILE as JP_STORAGE,
+    SOURCE_LABELS,
+    _JEH_EPC_ENTITIES,
+)
 
 
 def test_list_profiles():
@@ -37,6 +41,19 @@ def test_settings_loads_active_profile():
 
 def test_settings_uses_profile_recency_default(monkeypatch):
     monkeypatch.delenv("RECENCY_HOURS", raising=False)
+    monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
+
+    settings = get_settings()
+
+    assert settings.recency_hours == 14 * 24
+
+
+def test_blank_recency_env_uses_profile_default(monkeypatch):
+    """An explicitly blank .env value must not override the profile default.
+
+    中文注解：RECENCY_HOURS=（空值）应使用当前 Profile 的默认回看窗口。
+    """
+    monkeypatch.setenv("RECENCY_HOURS", "")
     monkeypatch.setenv("TRACKER_PROFILE", "jp_storage")
 
     settings = get_settings()
@@ -87,3 +104,62 @@ def test_profiles_expose_summary_and_analysis_contracts():
     assert "policy" in jp.analysis_schema.category_options
     assert usdjpy.analysis_system_prompt
     assert jp.analysis_system_prompt
+
+
+def test_jp_storage_battery_supplier_sources():
+    sources = get_profile("jp_storage").source_by_id()
+    source_ids = [s.id for s in get_profile("jp_storage").sources]
+    assert len(source_ids) == len(set(source_ids))
+
+    catl = sources["catl_news"]
+    assert catl.url == "https://www.catl.com/en/news/"
+    assert catl.priority_tier == 2
+    assert catl.languages == ["en"]
+    assert "/en/news/" in catl.link_patterns
+    assert "index_" in catl.exclude_patterns
+    assert catl.title_selector == "p.mc_e1_txt"
+    assert catl.date_selector == "div.mc_e1_date"
+
+    byd = sources["byd_energy_news"]
+    assert byd.kind == "byd_energy"
+    assert byd.url == "https://cms-api.byd.com/es/search"
+    assert byd.priority_tier == 2
+    assert byd.languages == ["en"]
+
+    hithium = sources["hithium_latest_updates"]
+    assert hithium.url == "https://www.hithium.com/newsroom/LatestUpdates"
+    assert hithium.priority_tier == 2
+    assert hithium.languages == ["en"]
+    assert "/newsroom/latest/details/" in hithium.link_patterns
+    assert hithium.title_selector == "h1"
+    assert hithium.date_selector == "div.time"
+
+    for sid in ("catl_news", "byd_energy_news", "hithium_latest_updates"):
+        assert sid in SOURCE_LABELS
+
+
+def test_jp_storage_tolling_and_tokyo_gas_keywords():
+    tiers = get_profile("jp_storage").keyword_tiers
+    assert "tolling agreement" in tiers["company"]
+    assert "トーリング契約" in tiers["company"]
+    assert "Tokyo Gas" in tiers["entity"]
+    assert "東京ガス" in tiers["entity"]
+    assert "Tokyo Gas" in tiers["general"]
+    assert "tolling agreement" in tiers["general"]
+
+
+def test_jp_storage_epc_not_in_global_keywords():
+    tiers = get_profile("jp_storage").keyword_tiers
+    epc_aliases = [
+        alias
+        for aliases in _JEH_EPC_ENTITIES.values()
+        for alias in aliases
+    ]
+    for bucket in ("general", "company", "entity", "policy", "project"):
+        for alias in epc_aliases:
+            assert alias not in tiers[bucket]
+
+    rules = get_profile("jp_storage").source_entity_boost_rules
+    assert len(rules) == 1
+    assert rules[0].source_id == "japan_energy_hub"
+    assert rules[0].max_bonus == 2

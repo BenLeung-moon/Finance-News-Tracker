@@ -7,6 +7,7 @@ from finance_news_tracker.profiles.base import (
     ReportLabels,
     ScoringSchema,
     SourceConfig,
+    SourceEntityBoostRule,
     SummarySection,
     TrackerProfile,
 )
@@ -95,6 +96,100 @@ _COMPANY_KEYWORDS = [
     "共同開発",
     "買収",
     "出資比率",
+]
+
+# Commercial arrangement keywords (merged into company tier for prefilter recall).
+# Prefer multi-word phrases; do NOT add bare "tolling" / "agreement".
+# 中文注解：商业安排关键词并入 company tier；避免过宽单词汇入产生误召回。
+_TOLLING_KEYWORDS = [
+    "tolling agreement",
+    "storage tolling agreement",
+    "battery tolling agreement",
+    "BESS tolling agreement",
+    "tolling contract",
+    "トーリング契約",
+    "蓄電池トーリング契約",
+]
+
+# Named entities for keyword recall (not EPC ranking list).
+_ENTITY_KEYWORDS = [
+    "Tokyo Gas",
+    "Tokyo Gas Co., Ltd.",
+    "東京ガス",
+]
+
+# Japan Energy Hub–scoped EPC aliases for candidate ranking only.
+# Must NOT be added to keyword_tiers / general list.
+# 中文注解：仅用于 JEH 来源的候选排序加权，不进入全局关键词召回。
+_JEH_EPC_ENTITIES = {
+    "TESS Engineering": [
+        "TESS Engineering",
+        "テス・エンジニアリング",
+    ],
+    "GreenEnergy": [
+        "GreenEnergy",
+        "GreenEnergy & Company",
+        "GreenEnergy Plus",
+        "グリーンエナジー＆カンパニー",
+        "グリーンエナジープラス",
+    ],
+    "JPN ENERGY": [
+        "JPN ENERGY",
+        "日本エネルギー総合システム",
+    ],
+    "Shizen Engineering": [
+        "Shizen Engineering",
+        "自然エンジニアリング",
+    ],
+    "Kinden": [
+        "Kinden",
+        "Kinden Corporation",
+        "きんでん",
+    ],
+    "JFE Engineering": [
+        "JFE Engineering",
+        "JFEエンジニアリング",
+    ],
+    "LS ELECTRIC": [
+        "LS ELECTRIC",
+        "LS Electric Japan",
+    ],
+    "Nishinippon Plant Engineering and Construction": [
+        "Nishinippon Plant Engineering and Construction",
+        "西日本プラント工業",
+    ],
+    "Toshiba Group": [
+        "Toshiba Group",
+        "Toshiba",
+        "東芝",
+    ],
+    "Taisei": [
+        "Taisei",
+        "Taisei Corporation",
+        "大成建設",
+    ],
+    "Kajima": [
+        "Kajima",
+        "Kajima Corporation",
+        "鹿島建設",
+    ],
+}
+
+_JEH_EPC_CONTEXT_KEYWORDS = [
+    "BESS",
+    "battery storage",
+    "energy storage",
+    "grid-scale storage",
+    "storage project",
+    "EPC",
+    "engineering, procurement and construction",
+    "construction contract",
+    "system integrator",
+    "系統用蓄電池",
+    "蓄電所",
+    "蓄電池",
+    "EPC契約",
+    "設計・調達・建設",
 ]
 
 SCORING_SYSTEM_PROMPT = """You are a senior Japan power-market analyst scoring news for relevance
@@ -269,6 +364,9 @@ def _html(
     priority_tier: int = 2,
     url_year_templated: bool = False,
     allow_pdf: bool = False,
+    title_selector: str = "",
+    date_selector: str = "",
+    date_formats: list[str] | None = None,
 ) -> SourceConfig:
     return SourceConfig(
         id=id,
@@ -284,6 +382,9 @@ def _html(
         priority_tier=priority_tier,
         url_year_templated=url_year_templated,
         allow_pdf=allow_pdf,
+        title_selector=title_selector,
+        date_selector=date_selector,
+        date_formats=date_formats or [],
     )
 
 
@@ -632,6 +733,40 @@ SOURCES: list[SourceConfig] = [
         ],
         priority_tier=2,
     ),
+    # Battery suppliers (global OEMs) — tier 2; still require keyword + LLM relevance.
+    # 中文注解：独立官方信源，priority_tier 只表示来源层级，不豁免相关性判断。
+    _html(
+        "catl_news",
+        "CATL (News)",
+        "https://www.catl.com/en/news/",
+        languages=["en"],
+        link_patterns=["/en/news/"],
+        exclude_patterns=["index_"],
+        priority_tier=2,
+        title_selector="p.mc_e1_txt",
+        date_selector="div.mc_e1_date",
+        date_formats=["%m/%d/%Y"],
+    ),
+    SourceConfig(
+        id="byd_energy_news",
+        name="BYD Energy Storage (News)",
+        kind="byd_energy",
+        url="https://cms-api.byd.com/es/search",
+        languages=["en"],
+        priority_tier=2,
+    ),
+    _html(
+        "hithium_latest_updates",
+        "HiTHIUM (Latest Updates)",
+        "https://www.hithium.com/newsroom/LatestUpdates",
+        languages=["en"],
+        link_patterns=["/newsroom/latest/details/"],
+        priority_tier=2,
+        # Live page mixes h1.h4-b and h1.h2-s-b; use bare h1 inside the card link.
+        title_selector="h1",
+        date_selector="div.time",
+        date_formats=["%B %d,%Y"],
+    ),
 ]
 
 SOURCE_LABELS = {s.id: s.name for s in SOURCES}
@@ -644,8 +779,15 @@ PROFILE = TrackerProfile(
     keyword_tiers={
         "policy": _POLICY_KEYWORDS,
         "project": _PROJECT_KEYWORDS,
-        "company": _COMPANY_KEYWORDS,
-        "general": _POLICY_KEYWORDS + _PROJECT_KEYWORDS + _COMPANY_KEYWORDS,
+        "company": _COMPANY_KEYWORDS + _TOLLING_KEYWORDS,
+        "entity": _ENTITY_KEYWORDS,
+        "general": (
+            _POLICY_KEYWORDS
+            + _PROJECT_KEYWORDS
+            + _COMPANY_KEYWORDS
+            + _TOLLING_KEYWORDS
+            + _ENTITY_KEYWORDS
+        ),
     },
     sources=SOURCES,
     scoring_system_prompt=SCORING_SYSTEM_PROMPT,
@@ -701,4 +843,14 @@ PROFILE = TrackerProfile(
     title_fallback_rules=[],
     boilerplate_terms=["breaking", "update", "live", "analysis"],
     high_priority_tiers=frozenset({"policy"}),
+    source_entity_boost_rules=[
+        SourceEntityBoostRule(
+            source_id="japan_energy_hub",
+            entity_aliases=_JEH_EPC_ENTITIES,
+            context_keywords=_JEH_EPC_CONTEXT_KEYWORDS,
+            entity_bonus=1,
+            context_bonus=1,
+            max_bonus=2,
+        )
+    ],
 )
