@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 
 import httpx
 
-from finance_news_tracker.config import SOURCES, Settings
+from finance_news_tracker.config import Settings
 from finance_news_tracker.collectors.enrich import enrich_from_html
 from finance_news_tracker.collectors.html import collect_html
+from finance_news_tracker.collectors.http import browser_headers
 from finance_news_tracker.collectors.rss import collect_rss
 from finance_news_tracker.collectors.utils import (
     content_hash,
@@ -33,20 +34,22 @@ def collect_all(
     articles: list[Article] = []
     seen_hashes: set[str] = set()
     now = datetime.now(timezone.utc)
-    headers = {"User-Agent": settings.user_agent}
+    headers = browser_headers(settings)
 
     with httpx.Client(
         timeout=settings.request_timeout_seconds,
         headers=headers,
         follow_redirects=True,
     ) as client:
-        for source in SOURCES:
+        for source in settings.sources:
             try:
                 if source.kind == "rss":
                     items = collect_rss(source, settings)
                 elif source.kind == "html":
                     items = collect_html(source, settings)
                 else:
+                    # Profile-specific kinds (custom collectors) can be wired here.
+                    # 中文注解：站点专属 collector 由业务 profile 扩展时再注册，不进核心框架。
                     logger.warning("Unknown source kind: %s", source.kind)
                     continue
             except Exception:

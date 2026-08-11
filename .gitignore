@@ -1,6 +1,7 @@
 .env
 .claude/
 .venv/
+.cursor/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -11,6 +12,5 @@ build/
 *.db
 data/
 logs/
-summaries/*.md
+summaries/
 !summaries/.gitkeep
-summaries/*.docx

@@ -38,14 +38,22 @@ def run_score(
 ) -> int:
     settings = get_settings()
     store = get_store(settings)
-    llm_config = settings.resolve_llm_config(provider, model)
+    llm_config = settings.resolve_scoring_llm_config(provider, model)
     unscored = (
         frozen_items
         if frozen_items is not None
-        else store.get_unscored_for(llm_config.provider, llm_config.model)
+        else store.get_unscored_for(
+            llm_config.provider,
+            llm_config.model,
+            source_ids=set(settings.active_profile.source_by_id()),
+        )
     )
     if not unscored:
-        logger.info("No unscored articles for %s/%s.", llm_config.provider, llm_config.model)
+        logger.info(
+            "No unscored articles for scoring %s/%s.",
+            llm_config.provider,
+            llm_config.model,
+        )
         return 0
 
     to_score = list(unscored) if frozen_items is not None else rank_for_scoring(unscored, settings)
@@ -79,11 +87,25 @@ def run_summarize(
     provider: str | None = None,
     model: str | None = None,
     *,
+    scoring_provider: str | None = None,
+    scoring_model: str | None = None,
+    analysis_provider: str | None = None,
+    analysis_model: str | None = None,
     write_latest_manifest: bool | None = None,
 ) -> GeneratedReport | None:
     settings = get_settings()
     store = get_store(settings)
-    explicit_provider = provider is not None or model is not None
+    explicit_provider = any(
+        value is not None
+        for value in (
+            provider,
+            model,
+            scoring_provider,
+            scoring_model,
+            analysis_provider,
+            analysis_model,
+        )
+    )
     should_write_manifest = (
         not explicit_provider if write_latest_manifest is None else write_latest_manifest
     )
@@ -92,6 +114,10 @@ def run_summarize(
         settings,
         provider=provider,
         model=model,
+        scoring_provider=scoring_provider,
+        scoring_model=scoring_model,
+        analysis_provider=analysis_provider,
+        analysis_model=analysis_model,
         write_latest_manifest=should_write_manifest,
     )
 
@@ -99,14 +125,31 @@ def run_summarize(
 def run_once(
     provider: str | None = None,
     model: str | None = None,
+    *,
+    scoring_provider: str | None = None,
+    scoring_model: str | None = None,
+    analysis_provider: str | None = None,
+    analysis_model: str | None = None,
 ) -> GeneratedReport | None:
-    """Full production pipeline: collect → score → summarize with one provider/model."""
+    """Full production pipeline: collect → score → analyze/summarize.
+
+    Role-specific provider/model can differ. Legacy ``provider``/``model`` still
+    apply to both roles when role args are omitted.
+    """
     stats = run_collect()
     logger.info("Collect stats: %s", stats)
-    scored = run_score(provider=provider, model=model)
+
+    score_provider = scoring_provider if scoring_provider is not None else provider
+    score_model = scoring_model if scoring_model is not None else model
+    scored = run_score(provider=score_provider, model=score_model)
     logger.info("Scored %d articles", scored)
+
     return run_summarize(
         provider=provider,
         model=model,
+        scoring_provider=scoring_provider if scoring_provider is not None else provider,
+        scoring_model=scoring_model if scoring_model is not None else model,
+        analysis_provider=analysis_provider if analysis_provider is not None else provider,
+        analysis_model=analysis_model if analysis_model is not None else model,
         write_latest_manifest=True,
     )

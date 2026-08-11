@@ -2,7 +2,11 @@ from datetime import datetime, timezone
 
 from finance_news_tracker.config import get_settings
 from finance_news_tracker.models import Article
-from finance_news_tracker.prefilter import prefilter_article, rank_for_scoring
+from finance_news_tracker.prefilter import (
+    _source_entity_boost,
+    prefilter_article,
+    rank_for_scoring,
+)
 
 
 def test_prefilter_hits_fx_keyword():
@@ -137,3 +141,50 @@ def test_rank_limits_results():
     ]
     ranked = rank_for_scoring(articles, settings)
     assert len(ranked) == 2
+
+
+def test_usdjpy_source_entity_boost_rules_empty(monkeypatch):
+    monkeypatch.setenv("TRACKER_PROFILE", "usdjpy")
+    settings = get_settings()
+    article = Article(
+        source="fxstreet_news",
+        title="Acme Corp announces battery storage EPC",
+        url="https://example.com/no-boost",
+        published_at=datetime.now(timezone.utc),
+    )
+    bonus, signals = _source_entity_boost(article, settings)
+    assert bonus == 0
+    assert signals == []
+    assert settings.active_profile.source_entity_boost_rules == []
+
+
+def test_source_entity_boost_applies_configured_rule(monkeypatch):
+    """Framework hook: profile-supplied rules boost ranking without prefilter pass."""
+    from finance_news_tracker.profiles.base import SourceEntityBoostRule
+
+    monkeypatch.setenv("TRACKER_PROFILE", "usdjpy")
+    settings = get_settings()
+    previous = settings.active_profile.source_entity_boost_rules
+    settings.active_profile.source_entity_boost_rules = [
+        SourceEntityBoostRule(
+            source_id="fxstreet_news",
+            entity_aliases={"Acme Corp": ["Acme Corp", "Acme"]},
+            context_keywords=["battery storage"],
+            entity_bonus=1,
+            context_bonus=1,
+            max_bonus=2,
+        )
+    ]
+    try:
+        article = Article(
+            source="fxstreet_news",
+            title="Acme Corp wins battery storage contract",
+            url="https://example.com/boost",
+            published_at=datetime.now(timezone.utc),
+        )
+        bonus, signals = _source_entity_boost(article, settings)
+        assert bonus == 2
+        assert "entity:Acme Corp" in signals
+        assert any(s.startswith("entity_context:") for s in signals)
+    finally:
+        settings.active_profile.source_entity_boost_rules = previous

@@ -10,6 +10,7 @@ import feedparser
 import httpx
 from bs4 import BeautifulSoup
 
+from finance_news_tracker.collectors.http import browser_headers
 from finance_news_tracker.collectors.utils import content_hash
 from finance_news_tracker.config import SourceConfig, Settings
 from finance_news_tracker.models import Article
@@ -49,8 +50,27 @@ def _clean_summary(entry: dict) -> str:
     return _strip_html(str(summary))[:2000]
 
 
+def _feed_content(entry: dict) -> str:
+    """Extract the first full-text RSS/Atom content block when the feed supplies one."""
+    content = entry.get("content") or []
+    if not content:
+        return ""
+    first = content[0]
+    value = first.get("value", "") if hasattr(first, "get") else ""
+    return _strip_html(str(value))[:12000]
+
+
+def _entry_allowed(source: SourceConfig, title: str, url: str) -> bool:
+    for pat in source.exclude_patterns:
+        if pat and (pat in url or pat in title):
+            return False
+    if source.link_patterns:
+        return any(pat in url for pat in source.link_patterns)
+    return True
+
+
 def collect_rss(source: SourceConfig, settings: Settings) -> list[Article]:
-    headers = {"User-Agent": settings.user_agent}
+    headers = browser_headers(settings)
     with httpx.Client(timeout=settings.request_timeout_seconds, headers=headers) as client:
         response = client.get(source.url)
         response.raise_for_status()
@@ -64,11 +84,17 @@ def collect_rss(source: SourceConfig, settings: Settings) -> list[Article]:
         url = (entry.get("link") or "").strip()
         if not title or not url:
             continue
+        if not _entry_allowed(source, title, url):
+            continue
 
         published_at = _parse_published(entry)
         # Nikkei Asia 等源 RSS 常无日期字段：保留 None，不再伪造 now()。
         # 时效与排序改用 collected_at（首次抓取时刻）作近似，避免旧文被当成刚发布。
-        summary = _clean_summary(entry)
+        summary = (
+            _feed_content(entry)
+            if source.prefer_feed_content
+            else ""
+        ) or _clean_summary(entry)
         article = Article(
             source=source.id,
             title=title,

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from finance_news_tracker.config import Settings
-from finance_news_tracker.models import Article, ScoreResult
+from finance_news_tracker.models import AnalysisResult, Article, ScoreResult, TrackerItem
 
 
 def _utc_now_iso() -> str:
@@ -73,8 +73,8 @@ class Store:
                     provider TEXT NOT NULL DEFAULT 'deepseek',
                     model TEXT NOT NULL DEFAULT 'deepseek-chat',
                     relevance_score INTEGER NOT NULL,
-                    fx_channel TEXT,
-                    likely_usdjpy_direction TEXT,
+                    category TEXT,
+                    signal TEXT,
                     confidence TEXT,
                     summary TEXT,
                     why_it_matters TEXT,
@@ -91,9 +91,65 @@ class Store:
                     file_path TEXT NOT NULL,
                     provider TEXT NOT NULL DEFAULT 'deepseek',
                     model TEXT NOT NULL DEFAULT 'deepseek-chat',
+                    scoring_provider TEXT,
+                    scoring_model TEXT,
+                    analysis_provider TEXT,
+                    analysis_model TEXT,
                     article_count INTEGER,
                     top_score INTEGER,
                     body TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS analyses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    article_id INTEGER NOT NULL,
+                    profile_id TEXT NOT NULL,
+                    scoring_provider TEXT NOT NULL,
+                    scoring_model TEXT NOT NULL,
+                    analysis_provider TEXT NOT NULL,
+                    analysis_model TEXT NOT NULL,
+                    category TEXT,
+                    entity TEXT,
+                    impact TEXT,
+                    suggested_action TEXT,
+                    model_raw TEXT,
+                    analyzed_at TEXT NOT NULL,
+                    FOREIGN KEY (article_id) REFERENCES articles(id),
+                    UNIQUE(
+                        article_id, profile_id,
+                        scoring_provider, scoring_model,
+                        analysis_provider, analysis_model
+                    )
+                );
+
+                CREATE TABLE IF NOT EXISTS tracker_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    article_id INTEGER NOT NULL,
+                    profile_id TEXT NOT NULL,
+                    scoring_provider TEXT NOT NULL,
+                    scoring_model TEXT NOT NULL,
+                    analysis_provider TEXT NOT NULL,
+                    analysis_model TEXT NOT NULL,
+                    item_date TEXT,
+                    source TEXT NOT NULL,
+                    category TEXT,
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    relevance_score INTEGER,
+                    entity TEXT,
+                    impact TEXT,
+                    suggested_action TEXT,
+                    owner TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    original_link TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (article_id) REFERENCES articles(id),
+                    UNIQUE(
+                        article_id, profile_id,
+                        scoring_provider, scoring_model,
+                        analysis_provider, analysis_model
+                    )
                 );
 
                 CREATE TABLE IF NOT EXISTS run_history (
@@ -122,11 +178,27 @@ class Store:
                 """
             )
             self._migrate_scores_if_needed(conn)
+            self._migrate_score_columns_if_needed(conn)
             self._migrate_summary_runs_if_needed(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_scores_provider_model_relevance
                     ON scores(provider, model, relevance_score DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_analyses_profile_models
+                    ON analyses(
+                        profile_id, scoring_provider, scoring_model,
+                        analysis_provider, analysis_model
+                    )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tracker_items_profile_status
+                    ON tracker_items(profile_id, status, updated_at DESC)
                 """
             )
 
@@ -172,8 +244,8 @@ class Store:
                 provider TEXT NOT NULL,
                 model TEXT NOT NULL,
                 relevance_score INTEGER NOT NULL,
-                fx_channel TEXT,
-                likely_usdjpy_direction TEXT,
+                category TEXT,
+                signal TEXT,
                 confidence TEXT,
                 summary TEXT,
                 why_it_matters TEXT,
@@ -188,8 +260,8 @@ class Store:
         conn.execute(
             """
             INSERT INTO scores_new
-                (id, article_id, provider, model, relevance_score, fx_channel,
-                 likely_usdjpy_direction, confidence, summary, why_it_matters,
+                (id, article_id, provider, model, relevance_score, category,
+                 signal, confidence, summary, why_it_matters,
                  source_citation, model_raw, scored_at)
             SELECT id, article_id, ?, ?, relevance_score, fx_channel,
                    likely_usdjpy_direction, confidence, summary, why_it_matters,
@@ -209,6 +281,82 @@ class Store:
             """
         )
 
+    def _migrate_score_columns_if_needed(self, conn: sqlite3.Connection) -> None:
+        """Rename fx_channel / likely_usdjpy_direction to neutral category / signal."""
+        columns = self._table_columns(conn, "scores")
+        if "category" in columns and "fx_channel" not in columns:
+            return
+        if "fx_channel" not in columns:
+            return
+
+        existing_count = conn.execute("SELECT COUNT(*) AS c FROM scores").fetchone()["c"]
+        if existing_count and not self._has_real_db_backup():
+            raise RuntimeError(
+                "scores column migration requires a data/tracker.db backup first. "
+                "Create a backup next to the DB before reopening the tracker."
+            )
+
+        conn.executescript(
+            """
+            CREATE TABLE scores_columns_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                relevance_score INTEGER NOT NULL,
+                category TEXT,
+                signal TEXT,
+                confidence TEXT,
+                summary TEXT,
+                why_it_matters TEXT,
+                source_citation TEXT,
+                model_raw TEXT,
+                scored_at TEXT NOT NULL,
+                FOREIGN KEY (article_id) REFERENCES articles(id),
+                UNIQUE(article_id, provider, model)
+            );
+            """
+        )
+        if "category" in columns:
+            conn.execute(
+                """
+                INSERT INTO scores_columns_new
+                    (id, article_id, provider, model, relevance_score, category,
+                     signal, confidence, summary, why_it_matters,
+                     source_citation, model_raw, scored_at)
+                SELECT id, article_id, provider, model, relevance_score,
+                       COALESCE(category, fx_channel),
+                       COALESCE(signal, likely_usdjpy_direction),
+                       confidence, summary, why_it_matters,
+                       source_citation, model_raw, scored_at
+                FROM scores
+                """
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO scores_columns_new
+                    (id, article_id, provider, model, relevance_score, category,
+                     signal, confidence, summary, why_it_matters,
+                     source_citation, model_raw, scored_at)
+                SELECT id, article_id, provider, model, relevance_score,
+                       fx_channel, likely_usdjpy_direction,
+                       confidence, summary, why_it_matters,
+                       source_citation, model_raw, scored_at
+                FROM scores
+                """
+            )
+        conn.executescript(
+            """
+            DROP TABLE scores;
+            ALTER TABLE scores_columns_new RENAME TO scores;
+            CREATE INDEX IF NOT EXISTS idx_scores_relevance
+                ON scores(relevance_score DESC);
+            CREATE INDEX IF NOT EXISTS idx_scores_provider_model_relevance
+                ON scores(provider, model, relevance_score DESC);
+            """
+        )
+
     def _migrate_summary_runs_if_needed(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, "summary_runs")
         if "provider" not in columns:
@@ -221,6 +369,15 @@ class Store:
             conn.execute(
                 f"ALTER TABLE summary_runs ADD COLUMN model TEXT NOT NULL DEFAULT '{model}'"
             )
+        # Role lineage columns (nullable for older rows)
+        for col in (
+            "scoring_provider",
+            "scoring_model",
+            "analysis_provider",
+            "analysis_model",
+        ):
+            if col not in columns:
+                conn.execute(f"ALTER TABLE summary_runs ADD COLUMN {col} TEXT")
 
     def upsert_article(self, article: Article) -> tuple[int, bool]:
         """Insert article if new. Returns (id, is_new)."""
@@ -298,12 +455,26 @@ class Store:
             ).fetchall()
         return self._rows_to_articles(rows)
 
-    def get_unscored_for(self, provider: str, model: str) -> list[tuple[Article, int]]:
+    def get_unscored_for(
+        self,
+        provider: str,
+        model: str,
+        *,
+        source_ids: set[str] | None = None,
+    ) -> list[tuple[Article, int]]:
         if not provider or not model:
             raise ValueError("provider and model are required for provider-aware scoring")
+        if source_ids is not None and not source_ids:
+            return []
+        source_sql = ""
+        params: list[Any] = [provider, model]
+        if source_ids is not None:
+            placeholders = ", ".join("?" for _ in source_ids)
+            source_sql = f" AND a.source IN ({placeholders})"
+            params.extend(sorted(source_ids))
         with self._conn() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT a.id, a.source, a.title, a.url, a.published_at, a.summary,
                        a.content_hash, a.raw_excerpt
                 FROM articles a
@@ -312,9 +483,10 @@ class Store:
                    AND s.provider = ?
                    AND s.model = ?
                 WHERE s.id IS NULL
+                {source_sql}
                 ORDER BY a.published_at DESC, a.collected_at DESC
                 """,
-                (provider, model),
+                params,
             ).fetchall()
         return self._rows_to_articles(rows)
 
@@ -350,14 +522,14 @@ class Store:
             conn.execute(
                 """
                 INSERT INTO scores
-                    (article_id, provider, model, relevance_score, fx_channel,
-                     likely_usdjpy_direction, confidence, summary,
+                    (article_id, provider, model, relevance_score, category,
+                     signal, confidence, summary,
                      why_it_matters, source_citation, model_raw, scored_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(article_id, provider, model) DO UPDATE SET
                     relevance_score = excluded.relevance_score,
-                    fx_channel = excluded.fx_channel,
-                    likely_usdjpy_direction = excluded.likely_usdjpy_direction,
+                    category = excluded.category,
+                    signal = excluded.signal,
                     confidence = excluded.confidence,
                     summary = excluded.summary,
                     why_it_matters = excluded.why_it_matters,
@@ -370,8 +542,8 @@ class Store:
                     score.provider,
                     score.model,
                     score.relevance_score,
-                    score.fx_channel,
-                    score.likely_usdjpy_direction,
+                    score.category,
+                    score.signal,
                     score.confidence,
                     score.summary,
                     score.why_it_matters,
@@ -389,15 +561,22 @@ class Store:
         *,
         provider: str,
         model: str,
+        source_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         if not provider or not model:
             raise ValueError("provider and model are required for summary reads")
+        if source_ids is not None and not source_ids:
+            return []
         # Effective timestamp = published_at, falling back to collected_at for
         # undated items. Ordering and the recency window both use it so the
         # summary surfaces *recent* high-scored news, not the all-time top score.
         ts = "COALESCE(a.published_at, a.collected_at)"
         where = ["s.provider = ?", "s.model = ?", "s.relevance_score >= ?"]
         params: list[Any] = [provider, model, min_relevance]
+        if source_ids is not None:
+            placeholders = ", ".join("?" for _ in source_ids)
+            where.append(f"a.source IN ({placeholders})")
+            params.extend(sorted(source_ids))
         if recency_hours is not None:
             where.append(f"{ts} >= ?")
             params.append(_cutoff_iso(recency_hours))
@@ -406,8 +585,8 @@ class Store:
             rows = conn.execute(
                 f"""
                 SELECT a.id, a.source, a.title, a.url, a.published_at, a.collected_at,
-                       s.provider, s.model, s.relevance_score, s.fx_channel,
-                       s.likely_usdjpy_direction,
+                       s.provider, s.model, s.relevance_score, s.category,
+                       s.signal,
                        s.confidence, s.summary, s.why_it_matters, s.source_citation
                 FROM scores s
                 JOIN articles a ON a.id = s.article_id
@@ -426,12 +605,19 @@ class Store:
         *,
         provider: str,
         model: str,
+        source_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         if not provider or not model:
             raise ValueError("provider and model are required for summary reads")
+        if source_ids is not None and not source_ids:
+            return []
         ts = "COALESCE(a.published_at, a.collected_at)"
         where = ["s.provider = ?", "s.model = ?"]
         params: list[Any] = [provider, model]
+        if source_ids is not None:
+            placeholders = ", ".join("?" for _ in source_ids)
+            where.append(f"a.source IN ({placeholders})")
+            params.extend(sorted(source_ids))
         if recency_hours is not None:
             where.append(f"{ts} >= ?")
             params.append(_cutoff_iso(recency_hours))
@@ -441,8 +627,8 @@ class Store:
             rows = conn.execute(
                 f"""
                 SELECT a.id, a.source, a.title, a.url, a.published_at, a.collected_at,
-                       s.provider, s.model, s.relevance_score, s.fx_channel,
-                       s.likely_usdjpy_direction,
+                       s.provider, s.model, s.relevance_score, s.category,
+                       s.signal,
                        s.confidence, s.summary, s.why_it_matters, s.source_citation
                 FROM scores s
                 JOIN articles a ON a.id = s.article_id
@@ -454,6 +640,301 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def save_analysis(self, analysis: AnalysisResult) -> None:
+        """Upsert analysis for an article + scoring/analysis model combination."""
+        if not analysis.scoring_provider or not analysis.scoring_model:
+            raise ValueError("scoring_provider and scoring_model are required")
+        if not analysis.analysis_provider or not analysis.analysis_model:
+            raise ValueError("analysis_provider and analysis_model are required")
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO analyses
+                    (article_id, profile_id, scoring_provider, scoring_model,
+                     analysis_provider, analysis_model, category, entity,
+                     impact, suggested_action, model_raw, analyzed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    article_id, profile_id,
+                    scoring_provider, scoring_model,
+                    analysis_provider, analysis_model
+                ) DO UPDATE SET
+                    category = excluded.category,
+                    entity = excluded.entity,
+                    impact = excluded.impact,
+                    suggested_action = excluded.suggested_action,
+                    model_raw = excluded.model_raw,
+                    analyzed_at = excluded.analyzed_at
+                """,
+                (
+                    analysis.article_id,
+                    analysis.profile_id,
+                    analysis.scoring_provider,
+                    analysis.scoring_model,
+                    analysis.analysis_provider,
+                    analysis.analysis_model,
+                    analysis.category,
+                    analysis.entity,
+                    analysis.impact,
+                    analysis.suggested_action,
+                    analysis.model_raw,
+                    _utc_now_iso(),
+                ),
+            )
+
+    def get_analyses_for_articles(
+        self,
+        article_ids: list[int],
+        *,
+        profile_id: str,
+        scoring_provider: str,
+        scoring_model: str,
+        analysis_provider: str,
+        analysis_model: str,
+    ) -> dict[int, AnalysisResult]:
+        if not article_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in article_ids)
+        params: list[Any] = [
+            profile_id,
+            scoring_provider,
+            scoring_model,
+            analysis_provider,
+            analysis_model,
+            *article_ids,
+        ]
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT article_id, profile_id, scoring_provider, scoring_model,
+                       analysis_provider, analysis_model, category, entity,
+                       impact, suggested_action, model_raw
+                FROM analyses
+                WHERE profile_id = ?
+                  AND scoring_provider = ?
+                  AND scoring_model = ?
+                  AND analysis_provider = ?
+                  AND analysis_model = ?
+                  AND article_id IN ({placeholders})
+                """,
+                params,
+            ).fetchall()
+        return {
+            int(row["article_id"]): AnalysisResult(
+                article_id=int(row["article_id"]),
+                profile_id=row["profile_id"],
+                scoring_provider=row["scoring_provider"],
+                scoring_model=row["scoring_model"],
+                analysis_provider=row["analysis_provider"],
+                analysis_model=row["analysis_model"],
+                category=row["category"] or "other",
+                entity=row["entity"] or "n/a",
+                impact=row["impact"] or "",
+                suggested_action=row["suggested_action"] or "Monitor only",
+                model_raw=row["model_raw"] or "",
+            )
+            for row in rows
+        }
+
+    def upsert_tracker_item_from_analysis(
+        self,
+        *,
+        article: dict[str, Any],
+        analysis: AnalysisResult,
+    ) -> int:
+        """Create/update Tracker row from analysis without overwriting Owner/Status.
+
+        中文注解：重复运行只刷新分析字段；人工 Owner/Status 保持不变。
+        """
+        now = _utc_now_iso()
+        item_date = article.get("published_at") or article.get("collected_at")
+        if isinstance(item_date, str):
+            item_date_value = item_date
+        else:
+            item_date_value = None
+        with self._conn() as conn:
+            existing = conn.execute(
+                """
+                SELECT id, owner, status FROM tracker_items
+                WHERE article_id = ?
+                  AND profile_id = ?
+                  AND scoring_provider = ?
+                  AND scoring_model = ?
+                  AND analysis_provider = ?
+                  AND analysis_model = ?
+                """,
+                (
+                    analysis.article_id,
+                    analysis.profile_id,
+                    analysis.scoring_provider,
+                    analysis.scoring_model,
+                    analysis.analysis_provider,
+                    analysis.analysis_model,
+                ),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE tracker_items
+                    SET item_date = ?,
+                        source = ?,
+                        category = ?,
+                        title = ?,
+                        summary = ?,
+                        relevance_score = ?,
+                        entity = ?,
+                        impact = ?,
+                        suggested_action = ?,
+                        original_link = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        item_date_value,
+                        str(article.get("source") or ""),
+                        analysis.category,
+                        str(article.get("title") or ""),
+                        str(article.get("summary") or ""),
+                        int(article.get("relevance_score") or 0),
+                        analysis.entity,
+                        analysis.impact,
+                        analysis.suggested_action,
+                        str(article.get("url") or ""),
+                        now,
+                        int(existing["id"]),
+                    ),
+                )
+                return int(existing["id"])
+
+            cur = conn.execute(
+                """
+                INSERT INTO tracker_items
+                    (article_id, profile_id, scoring_provider, scoring_model,
+                     analysis_provider, analysis_model, item_date, source,
+                     category, title, summary, relevance_score, entity, impact,
+                     suggested_action, owner, status, original_link,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending',
+                        ?, ?, ?)
+                """,
+                (
+                    analysis.article_id,
+                    analysis.profile_id,
+                    analysis.scoring_provider,
+                    analysis.scoring_model,
+                    analysis.analysis_provider,
+                    analysis.analysis_model,
+                    item_date_value,
+                    str(article.get("source") or ""),
+                    analysis.category,
+                    str(article.get("title") or ""),
+                    str(article.get("summary") or ""),
+                    int(article.get("relevance_score") or 0),
+                    analysis.entity,
+                    analysis.impact,
+                    analysis.suggested_action,
+                    str(article.get("url") or ""),
+                    now,
+                    now,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def update_tracker_item_action(
+        self,
+        tracker_item_id: int,
+        *,
+        owner: str | None = None,
+        status: str | None = None,
+    ) -> None:
+        """Human-only update for Owner / Status action fields."""
+        sets: list[str] = ["updated_at = ?"]
+        params: list[Any] = [_utc_now_iso()]
+        if owner is not None:
+            sets.append("owner = ?")
+            params.append(owner)
+        if status is not None:
+            sets.append("status = ?")
+            params.append(status)
+        if len(params) == 1:
+            raise ValueError("owner and/or status must be provided")
+        params.append(tracker_item_id)
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"UPDATE tracker_items SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"tracker_item id={tracker_item_id} not found")
+
+    def list_tracker_items(
+        self,
+        *,
+        profile_id: str,
+        scoring_provider: str | None = None,
+        scoring_model: str | None = None,
+        analysis_provider: str | None = None,
+        analysis_model: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[TrackerItem]:
+        where = ["profile_id = ?"]
+        params: list[Any] = [profile_id]
+        if scoring_provider:
+            where.append("scoring_provider = ?")
+            params.append(scoring_provider)
+        if scoring_model:
+            where.append("scoring_model = ?")
+            params.append(scoring_model)
+        if analysis_provider:
+            where.append("analysis_provider = ?")
+            params.append(analysis_provider)
+        if analysis_model:
+            where.append("analysis_model = ?")
+            params.append(analysis_model)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, article_id, profile_id, scoring_provider, scoring_model,
+                       analysis_provider, analysis_model, item_date, source,
+                       category, title, summary, relevance_score, entity, impact,
+                       suggested_action, owner, status, original_link
+                FROM tracker_items
+                WHERE {" AND ".join(where)}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            TrackerItem(
+                id=int(row["id"]),
+                article_id=int(row["article_id"]),
+                profile_id=row["profile_id"],
+                scoring_provider=row["scoring_provider"],
+                scoring_model=row["scoring_model"],
+                analysis_provider=row["analysis_provider"],
+                analysis_model=row["analysis_model"],
+                item_date=row["item_date"],
+                source=row["source"],
+                category=row["category"] or "other",
+                title=row["title"],
+                summary=row["summary"] or "",
+                relevance_score=int(row["relevance_score"] or 0),
+                entity=row["entity"] or "n/a",
+                impact=row["impact"] or "",
+                suggested_action=row["suggested_action"] or "Monitor only",
+                owner=row["owner"],
+                status=row["status"] or "pending",
+                original_link=row["original_link"],
+            )
+            for row in rows
+        ]
+
     def save_summary_run(
         self,
         file_path: str,
@@ -463,6 +944,10 @@ class Store:
         *,
         provider: str,
         model: str,
+        scoring_provider: str | None = None,
+        scoring_model: str | None = None,
+        analysis_provider: str | None = None,
+        analysis_model: str | None = None,
     ) -> int:
         if not provider or not model:
             raise ValueError("provider and model are required for summary runs")
@@ -470,15 +955,21 @@ class Store:
             cur = conn.execute(
                 """
                 INSERT INTO summary_runs
-                    (generated_at, file_path, provider, model, article_count,
-                     top_score, body)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (generated_at, file_path, provider, model,
+                     scoring_provider, scoring_model,
+                     analysis_provider, analysis_model,
+                     article_count, top_score, body)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _utc_now_iso(),
                     file_path,
                     provider,
                     model,
+                    scoring_provider or provider,
+                    scoring_model or model,
+                    analysis_provider or provider,
+                    analysis_model or model,
                     article_count,
                     top_score,
                     body,
