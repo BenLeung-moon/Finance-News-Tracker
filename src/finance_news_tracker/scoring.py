@@ -9,37 +9,13 @@ from finance_news_tracker.models import Article, ScoreResult
 
 logger = logging.getLogger(__name__)
 
-SCORING_SYSTEM_PROMPT = """You are a senior FX strategist analyzing financial news
-(Japan, US policy, international FX) for relevance to USD/JPY (US dollar vs Japanese yen).
 
-Score each article for how likely it is to move or inform USD/JPY trading in the near term.
-This is explanatory relevance, not statistical correlation.
-
-Respond with ONLY valid JSON (no markdown fences) matching this schema:
-{
-  "relevance_score": <integer 0-100>,
-  "fx_channel": "<one of: monetary_policy, rates_differential, inflation, intervention, risk_sentiment, trade_commodities, growth_data, fiscal_policy, other>",
-  "likely_usdjpy_direction": "<one of: usd_jpy_up, usd_jpy_down, mixed, unclear>",
-  "confidence": "<one of: low, medium, high>",
-  "summary": "<2-3 sentence summary>",
-  "why_it_matters": "<1-2 sentences on USD/JPY transmission mechanism>",
-  "source_citation": "<title and source in one line>"
-}
-
-Scoring guide:
-- 80-100: Direct BOJ/Fed policy, intervention, major CPI/rates surprise
-- 60-79: Strong macro with clear yen channel (wages, JGB, oil shock to Japan)
-- 40-59: Indirect but meaningful (trade, risk-off, fiscal)
-- 20-39: Weak or tangential
-- 0-19: Not relevant to USD/JPY
-"""
-
-
-def _build_user_prompt(article: Article) -> str:
+def _build_user_prompt(article: Article, settings: Settings) -> str:
+    profile = settings.active_profile
     published = (
         article.published_at.isoformat() if article.published_at else "unknown"
     )
-    return f"""Analyze this news item for USD/JPY relevance:
+    return f"""Analyze this news item for {profile.name} relevance:
 
 Source: {article.source}
 Title: {article.title}
@@ -56,11 +32,13 @@ def score_article(
     *,
     llm_config: LlmConfig | None = None,
 ) -> ScoreResult:
-    config = llm_config or settings.resolve_llm_config()
+    config = llm_config or settings.resolve_scoring_llm_config()
+    profile = settings.active_profile
+    schema = profile.scoring_schema
     parsed, content = complete_json(
         config,
-        system_prompt=SCORING_SYSTEM_PROMPT,
-        user_prompt=_build_user_prompt(article),
+        system_prompt=profile.scoring_system_prompt,
+        user_prompt=_build_user_prompt(article, settings),
         temperature=0.2,
         max_tokens=1000,
         timeout_seconds=120.0,
@@ -69,10 +47,8 @@ def score_article(
     return ScoreResult(
         article_id=article_id,
         relevance_score=int(parsed.get("relevance_score", 0)),
-        fx_channel=str(parsed.get("fx_channel", "other")),
-        likely_usdjpy_direction=str(
-            parsed.get("likely_usdjpy_direction", "unclear")
-        ),
+        category=str(parsed.get(schema.category_field, "other")),
+        signal=str(parsed.get(schema.signal_field, "unclear")),
         confidence=str(parsed.get("confidence", "low")),
         summary=str(parsed.get("summary", "")),
         why_it_matters=str(parsed.get("why_it_matters", "")),
@@ -93,7 +69,7 @@ def score_articles_batch(
     provider: str | None = None,
     model: str | None = None,
 ) -> list[ScoreResult]:
-    config = settings.resolve_llm_config(provider, model)
+    config = settings.resolve_scoring_llm_config(provider, model)
     results: list[ScoreResult] = []
     for i, (article, article_id) in enumerate(items):
         try:

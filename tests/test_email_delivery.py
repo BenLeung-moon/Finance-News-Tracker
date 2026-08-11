@@ -12,43 +12,20 @@ from finance_news_tracker.email_delivery import (
 )
 
 
+from tests.conftest import make_test_settings
+
+
 def _email_settings(tmp_path: Path) -> Settings:
-    return Settings(
-        llm_provider="deepseek",
-        deepseek_api_key="",
-        deepseek_base_url="https://api.deepseek.com/v1",
-        deepseek_model="deepseek-v4-flash",
-        openai_api_key="",
-        openai_base_url="https://api.openai.com/v1",
-        openai_model="gpt-5.4-mini",
-        anthropic_api_key="",
-        anthropic_base_url="https://api.anthropic.com/v1",
-        anthropic_model="claude-haiku-4-5-20251001",
-        data_dir=tmp_path / "data",
-        summaries_dir=tmp_path / "summaries",
-        log_dir=tmp_path / "logs",
-        recency_hours=72,
-        min_relevance_score=40,
-        max_articles_to_score=25,
-        request_timeout_seconds=30,
-        user_agent="test",
-        run_timezone="Asia/Hong_Kong",
-        run_weekdays_only=True,
-        holiday_guard_enabled=False,
-        report_retention_days=90,
-        log_level="INFO",
-        email_enabled=True,
-        smtp_host="smtp.example.com",
-        smtp_port=587,
-        smtp_username="sender@nexaracapital.com",
-        smtp_password="secret",
-        smtp_use_tls=True,
-        smtp_use_ssl=False,
-        email_from="sender@nexaracapital.com",
-        email_to=["a@example.com", "b@example.com"],
-        email_subject_prefix="[TEST]",
-        email_attach_docx=True,
-    )
+    settings = make_test_settings(tmp_path)
+    settings.email_enabled = True
+    settings.smtp_host = "smtp.example.com"
+    settings.smtp_port = 587
+    settings.smtp_username = "sender@nexaracapital.com"
+    settings.smtp_password = "secret"
+    settings.email_from = "sender@nexaracapital.com"
+    settings.email_to = ["a@example.com", "b@example.com"]
+    settings.email_subject_prefix = "[TEST]"
+    return settings
 
 
 def test_validate_email_settings_missing():

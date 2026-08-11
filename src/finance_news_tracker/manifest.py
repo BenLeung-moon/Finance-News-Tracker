@@ -24,6 +24,10 @@ class GeneratedReport:
     article_count: int
     provider: str = "deepseek"
     model: str = "deepseek-chat"
+    scoring_provider: str = ""
+    scoring_model: str = ""
+    analysis_provider: str = ""
+    analysis_model: str = ""
 
 
 @dataclass
@@ -42,9 +46,15 @@ class ReportManifest:
     summary_source_count: int
     provider: str = "deepseek"
     model: str = "deepseek-chat"
+    scoring_provider: str = ""
+    scoring_model: str = ""
+    analysis_provider: str = ""
+    analysis_model: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReportManifest:
+        provider = str(data.get("provider", "deepseek"))
+        model = str(data.get("model", "deepseek-chat"))
         return cls(
             run_id=str(data["run_id"]),
             markdown_path=str(data["markdown_path"]),
@@ -52,8 +62,12 @@ class ReportManifest:
             created_at=str(data["created_at"]),
             timezone=str(data.get("timezone", "Asia/Hong_Kong")),
             summary_source_count=int(data.get("summary_source_count", 0)),
-            provider=str(data.get("provider", "deepseek")),
-            model=str(data.get("model", "deepseek-chat")),
+            provider=provider,
+            model=model,
+            scoring_provider=str(data.get("scoring_provider") or provider),
+            scoring_model=str(data.get("scoring_model") or model),
+            analysis_provider=str(data.get("analysis_provider") or provider),
+            analysis_model=str(data.get("analysis_model") or model),
         )
 
 
@@ -67,6 +81,10 @@ def write_latest_report_manifest(
     summary_source_count: int,
     provider: str = "deepseek",
     model: str = "deepseek-chat",
+    scoring_provider: str = "",
+    scoring_model: str = "",
+    analysis_provider: str = "",
+    analysis_model: str = "",
 ) -> Path:
     """Record the exact artifacts from the current generation run."""
     manifest = ReportManifest(
@@ -78,6 +96,10 @@ def write_latest_report_manifest(
         summary_source_count=summary_source_count,
         provider=provider,
         model=model,
+        scoring_provider=scoring_provider or provider,
+        scoring_model=scoring_model or model,
+        analysis_provider=analysis_provider or provider,
+        analysis_model=analysis_model or model,
     )
     path = settings.latest_report_manifest_path
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -20,7 +20,7 @@ def _export_side_by_side(conn: sqlite3.Connection, out_path: Path) -> None:
     rows = conn.execute(
         """
         SELECT a.id, a.title, a.url, s.provider, s.model, s.relevance_score,
-               s.likely_usdjpy_direction, s.confidence, s.summary
+               s.signal, s.confidence, s.summary
         FROM articles a
         JOIN scores s ON s.article_id = a.id
         ORDER BY a.id, s.provider, s.model
@@ -36,7 +36,7 @@ def _export_side_by_side(conn: sqlite3.Connection, out_path: Path) -> None:
         )
         label = f"{row['provider']}__{row['model']}"
         record[f"{label}_score"] = row["relevance_score"]
-        record[f"{label}_direction"] = row["likely_usdjpy_direction"]
+        record[f"{label}_signal"] = row["signal"]
         record[f"{label}_confidence"] = row["confidence"]
         record[f"{label}_summary"] = row["summary"]
 
@@ -46,7 +46,7 @@ def _export_side_by_side(conn: sqlite3.Connection, out_path: Path) -> None:
         fieldnames.extend(
             [
                 f"{label}_score",
-                f"{label}_direction",
+                f"{label}_signal",
                 f"{label}_confidence",
                 f"{label}_summary",
             ]
@@ -103,8 +103,8 @@ def main() -> None:
     rows = conn.execute(
         """
         SELECT a.source, a.title, a.published_at, a.url,
-               s.provider, s.model, s.relevance_score, s.likely_usdjpy_direction,
-               s.confidence, s.fx_channel, s.summary
+               s.provider, s.model, s.relevance_score, s.signal,
+               s.confidence, s.category, s.summary
         FROM scores s
         JOIN articles a ON a.id = s.article_id
         ORDER BY s.provider, s.model, s.relevance_score DESC
@@ -130,7 +130,7 @@ def main() -> None:
         print(
             f"{r['provider']}/{r['model']} "
             f"{r['relevance_score']:3d} {r['confidence']:6s} "
-            f"{r['likely_usdjpy_direction']:14s} {age_days:10s} {r['source']}"
+            f"{r['signal']:14s} {age_days:10s} {r['source']}"
         )
         print(f"     {title}")
 
@@ -142,11 +142,11 @@ def main() -> None:
         for (provider, model), group in grouped.items():
             scores = [r["relevance_score"] for r in group]
             conf = Counter(r["confidence"] for r in group)
-            dirs = Counter(r["likely_usdjpy_direction"] for r in group)
+            dirs = Counter(r["signal"] for r in group)
             print(
                 f"{provider}/{model}: range={min(scores)}-{max(scores)}, "
                 f"mean={sum(scores)/len(scores):.1f}, confidence={dict(conf)}, "
-                f"direction={dict(dirs)}"
+                f"signal={dict(dirs)}"
             )
         print(f"Articles older than 7 days among scored: {stale}/{len(rows)}")
 

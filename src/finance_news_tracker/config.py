@@ -1,146 +1,15 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from finance_news_tracker.profiles import get_active_profile, get_profile
+from finance_news_tracker.profiles.base import SourceConfig, TrackerProfile
+
 load_dotenv()
-
-# USD/JPY relevance prefilter keywords
-FX_KEYWORDS: list[str] = [
-    "usd/jpy",
-    "usd-jpy",
-    "dollar-yen",
-    "dollar yen",
-    "usdjpy",
-    "yen",
-    "jpy",
-    "boj",
-    "bank of japan",
-    "fed",
-    "federal reserve",
-    "rate",
-    "rates",
-    "interest rate",
-    "monetary policy",
-    "inflation",
-    "cpi",
-    "wage",
-    "wages",
-    "jgb",
-    "bond",
-    "treasury",
-    "yield",
-    "intervention",
-    "mof",
-    "finance ministry",
-    "trade balance",
-    "current account",
-    "oil",
-    "crude",
-    "risk-off",
-    "risk on",
-    "carry trade",
-    "fx",
-    "forex",
-    "exchange rate",
-    "currency",
-    "dollar",
-    "gdp",
-    "pmi",
-    "tankan",
-    "mpm",
-    "statement on monetary policy",
-    "fomc",
-    "powell",
-    "fed funds",
-    "treasury yields",
-    "tic",
-    "treasury international capital",
-    "quarterly refunding",
-    "payrolls",
-    "pce",
-    "ppi",
-    "retail sales",
-    "ism",
-    "tariff",
-    "debt issuance",
-    "fiscal",
-]
-
-
-@dataclass
-class SourceConfig:
-    id: str
-    name: str
-    kind: str  # "rss" | "html"
-    url: str
-    extra_urls: list[str] = field(default_factory=list)
-
-
-SOURCES: list[SourceConfig] = [
-    SourceConfig(
-        id="boj_whatsnew",
-        name="Bank of Japan (What's New)",
-        kind="rss",
-        # English feed: titles come through in English (the non-/en/ feed is Japanese)
-        url="https://www.boj.or.jp/en/rss/whatsnew.xml",
-    ),
-    SourceConfig(
-        id="boj_statistics",
-        name="Bank of Japan (Statistics)",
-        kind="rss",
-        url="https://www.boj.or.jp/en/rss/statistics.xml",
-    ),
-    SourceConfig(
-        id="nikkei_asia",
-        name="Nikkei Asia",
-        kind="rss",
-        url="https://asia.nikkei.com/rss/feed/nar",
-    ),
-    SourceConfig(
-        id="nhk_world",
-        name="NHK WORLD-JAPAN",
-        kind="html",
-        url="https://www3.nhk.or.jp/nhkworld/en/news/list/",
-        extra_urls=[
-            "https://www3.nhk.or.jp/nhkworld/en/news/tags/60/",  # Biz / Tech
-            "https://www3.nhk.or.jp/nhkworld/en/news/",
-        ],
-    ),
-    SourceConfig(
-        id="fed_press_monetary",
-        name="Federal Reserve (Monetary Policy Press)",
-        kind="rss",
-        url="https://www.federalreserve.gov/feeds/press_monetary.xml",
-    ),
-    SourceConfig(
-        id="fed_speeches",
-        name="Federal Reserve (Speeches)",
-        kind="rss",
-        url="https://www.federalreserve.gov/feeds/speeches.xml",
-    ),
-    SourceConfig(
-        id="us_treasury_press",
-        name="US Treasury (Press Releases)",
-        kind="html",
-        url="https://home.treasury.gov/news/press-releases",
-    ),
-    SourceConfig(
-        id="fxstreet_news",
-        name="FXStreet (Forex News)",
-        kind="rss",
-        url="https://www.fxstreet.com/rss/news",
-    ),
-    SourceConfig(
-        id="investing_forex",
-        name="Investing.com (Forex)",
-        kind="rss",
-        url="https://www.investing.com/rss/forex.rss",
-    ),
-]
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -193,12 +62,26 @@ class Settings:
     email_to: list[str]
     email_subject_prefix: str
     email_attach_docx: bool
-    fx_keywords: list[str] = field(default_factory=lambda: list(FX_KEYWORDS))
-    # Per-source caps for noisy FX media feeds (FXStreet, Investing.com)
-    fx_media_score_limit_per_source: int = 3
-    fx_media_score_limit_combined: int = 5
+    tracker_profile_id: str
+    active_profile: TrackerProfile
+    # Per-source caps for noisy feeds (FXStreet, Investing.com, etc.)
+    noisy_score_limit_per_source: int = 3
+    noisy_score_limit_combined: int = 5
     dedupe_similarity_threshold: float = 0.82
     summary_max_per_source: int = 2
+    # Role-specific LLM defaults (empty string = fall back to llm_provider / provider model)
+    scoring_llm_provider: str = ""
+    scoring_llm_model: str = ""
+    analysis_llm_provider: str = ""
+    analysis_llm_model: str = ""
+
+    @property
+    def sources(self) -> list[SourceConfig]:
+        return self.active_profile.sources
+
+    @property
+    def keywords(self) -> list[str]:
+        return self.active_profile.flat_keywords()
 
     @property
     def db_path(self) -> Path:
@@ -212,6 +95,19 @@ class Settings:
     def run_lock_path(self) -> Path:
         return self.data_dir / "run.lock"
 
+    def _provider_defaults(self, provider: str) -> tuple[str, str, str]:
+        """Return (model, api_key, base_url) for a provider name."""
+        selected = provider.strip().lower()
+        if selected == "deepseek":
+            return self.deepseek_model, self.deepseek_api_key, self.deepseek_base_url
+        if selected == "openai":
+            return self.openai_model, self.openai_api_key, self.openai_base_url
+        if selected == "anthropic":
+            return self.anthropic_model, self.anthropic_api_key, self.anthropic_base_url
+        raise ValueError(
+            "Unsupported LLM_PROVIDER. Expected one of: deepseek, openai, anthropic."
+        )
+
     def resolve_llm_config(
         self,
         provider: str | None = None,
@@ -220,34 +116,46 @@ class Settings:
         """Resolve None to the configured active provider, never to all providers.
 
         中文注解：`provider=None` 只代表当前默认 provider，不能代表全表混合查询。
+        保留为通用解析；角色化入口见 resolve_scoring / resolve_analysis。
         """
         from finance_news_tracker.llm import LlmConfig
 
         selected_provider = (provider or self.llm_provider).strip().lower()
-        if selected_provider == "deepseek":
-            return LlmConfig(
-                provider="deepseek",
-                model=model or self.deepseek_model,
-                api_key=self.deepseek_api_key,
-                base_url=self.deepseek_base_url,
-            )
-        if selected_provider == "openai":
-            return LlmConfig(
-                provider="openai",
-                model=model or self.openai_model,
-                api_key=self.openai_api_key,
-                base_url=self.openai_base_url,
-            )
-        if selected_provider == "anthropic":
-            return LlmConfig(
-                provider="anthropic",
-                model=model or self.anthropic_model,
-                api_key=self.anthropic_api_key,
-                base_url=self.anthropic_base_url,
-            )
-        raise ValueError(
-            "Unsupported LLM_PROVIDER. Expected one of: deepseek, openai, anthropic."
+        default_model, api_key, base_url = self._provider_defaults(selected_provider)
+        return LlmConfig(
+            provider=selected_provider,
+            model=model or default_model,
+            api_key=api_key,
+            base_url=base_url,
         )
+
+    def resolve_scoring_llm_config(
+        self,
+        provider: str | None = None,
+        model: str | None = None,
+    ):
+        """Resolve the Scoring-role LLM (high-throughput relevance filter)."""
+        selected_provider = (
+            provider
+            or self.scoring_llm_provider
+            or self.llm_provider
+        ).strip().lower()
+        selected_model = model or self.scoring_llm_model or None
+        return self.resolve_llm_config(selected_provider, selected_model)
+
+    def resolve_analysis_llm_config(
+        self,
+        provider: str | None = None,
+        model: str | None = None,
+    ):
+        """Resolve the Analysis-role LLM (impact judgment + memo synthesis)."""
+        selected_provider = (
+            provider
+            or self.analysis_llm_provider
+            or self.llm_provider
+        ).strip().lower()
+        selected_model = model or self.analysis_llm_model or None
+        return self.resolve_llm_config(selected_provider, selected_model)
 
 
 def get_settings() -> Settings:
@@ -257,6 +165,30 @@ def get_settings() -> Settings:
     data_dir.mkdir(parents=True, exist_ok=True)
     summaries_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    profile_id = os.getenv("TRACKER_PROFILE", "usdjpy").strip().lower()
+    active_profile = get_profile(profile_id)
+
+    # Accept legacy FX_MEDIA_* env names for backward compatibility
+    noisy_per_source = int(
+        os.getenv(
+            "NOISY_SCORE_LIMIT_PER_SOURCE",
+            os.getenv("FX_MEDIA_SCORE_LIMIT_PER_SOURCE", "3"),
+        )
+    )
+    noisy_combined = int(
+        os.getenv(
+            "NOISY_SCORE_LIMIT_COMBINED",
+            os.getenv("FX_MEDIA_SCORE_LIMIT_COMBINED", "5"),
+        )
+    )
+    recency_override = os.getenv("RECENCY_HOURS", "").strip()
+    recency_hours = (
+        int(recency_override)
+        if recency_override
+        else active_profile.default_recency_hours
+    )
+
     return Settings(
         llm_provider=os.getenv("LLM_PROVIDER", "deepseek"),
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
@@ -278,15 +210,11 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         summaries_dir=summaries_dir,
         log_dir=log_dir,
-        recency_hours=int(os.getenv("RECENCY_HOURS", "72")),
+        recency_hours=recency_hours,
         min_relevance_score=int(os.getenv("MIN_RELEVANCE_SCORE", "40")),
         max_articles_to_score=int(os.getenv("MAX_ARTICLES_TO_SCORE", "25")),
-        fx_media_score_limit_per_source=int(
-            os.getenv("FX_MEDIA_SCORE_LIMIT_PER_SOURCE", "3")
-        ),
-        fx_media_score_limit_combined=int(
-            os.getenv("FX_MEDIA_SCORE_LIMIT_COMBINED", "5")
-        ),
+        noisy_score_limit_per_source=noisy_per_source,
+        noisy_score_limit_combined=noisy_combined,
         dedupe_similarity_threshold=float(
             os.getenv("DEDUPE_SIMILARITY_THRESHOLD", "0.82")
         ),
@@ -314,4 +242,16 @@ def get_settings() -> Settings:
             "EMAIL_SUBJECT_PREFIX", "[Finance News Tracker]"
         ),
         email_attach_docx=_env_bool("EMAIL_ATTACH_DOCX", True),
+        tracker_profile_id=profile_id,
+        active_profile=active_profile,
+        scoring_llm_provider=os.getenv("SCORING_LLM_PROVIDER", "").strip(),
+        scoring_llm_model=os.getenv("SCORING_LLM_MODEL", "").strip(),
+        analysis_llm_provider=os.getenv("ANALYSIS_LLM_PROVIDER", "").strip(),
+        analysis_llm_model=os.getenv("ANALYSIS_LLM_MODEL", "").strip(),
     )
+
+
+# Backward-compatible module-level aliases (default profile)
+_default = get_active_profile()
+SOURCES: list[SourceConfig] = _default.sources
+FX_KEYWORDS: list[str] = _default.flat_keywords()

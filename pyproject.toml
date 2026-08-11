@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "finance-news-tracker"
 version = "0.1.0"
-description = "Local USD/JPY news tracker with DeepSeek executive summaries"
+description = "Multi-profile finance news tracker with LLM executive summaries"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

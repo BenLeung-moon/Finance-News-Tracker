@@ -8,9 +8,9 @@ from finance_news_tracker.models import Article, ScoreResult
 from finance_news_tracker.store import Store
 
 
-def _article(content_hash: str = "abc123") -> Article:
+def _article(content_hash: str = "abc123", source: str = "nikkei_asia") -> Article:
     return Article(
-        source="nikkei_asia",
+        source=source,
         title="Yen moves on Fed outlook",
         url=f"https://example.com/{content_hash}",
         published_at=datetime.now(timezone.utc),
@@ -28,8 +28,8 @@ def _score(
     return ScoreResult(
         article_id=article_id,
         relevance_score=relevance_score,
-        fx_channel="monetary_policy",
-        likely_usdjpy_direction="usd_jpy_up",
+        category="monetary_policy",
+        signal="usd_jpy_up",
         confidence="medium",
         summary=f"{provider} summary",
         why_it_matters="Rate differential widens",
@@ -102,6 +102,35 @@ def test_summary_reads_never_mix_provider_models(tmp_path: Path):
     assert recent[0]["provider"] == "deepseek"
 
 
+def test_provider_reads_can_filter_to_profile_sources(tmp_path: Path):
+    store = Store(tmp_path / "test.db")
+    jp_id, _ = store.upsert_article(_article("jp-storage", source="occto_rss"))
+    fx_id, _ = store.upsert_article(_article("fx-news", source="fxstreet_news"))
+    store.save_score(_score(jp_id, "deepseek", "deepseek-v4-pro", 75))
+    store.save_score(_score(fx_id, "deepseek", "deepseek-v4-pro", 95))
+
+    unscored = store.get_unscored_for(
+        "openai",
+        "gpt-5.4-mini",
+        source_ids={"occto_rss"},
+    )
+    top = store.get_top_scored(
+        40,
+        provider="deepseek",
+        model="deepseek-v4-pro",
+        source_ids={"occto_rss"},
+    )
+    recent = store.get_recently_scored_all(
+        provider="deepseek",
+        model="deepseek-v4-pro",
+        source_ids={"occto_rss"},
+    )
+
+    assert [article.source for article, _id in unscored] == ["occto_rss"]
+    assert [row["source"] for row in top] == ["occto_rss"]
+    assert [row["source"] for row in recent] == ["occto_rss"]
+
+
 def test_save_score_does_not_block_another_provider_with_articles_scored(tmp_path: Path):
     store = Store(tmp_path / "test.db")
     aid, _ = store.upsert_article(_article("legacy-flag"))
@@ -171,7 +200,65 @@ def test_rebuilds_legacy_score_table_with_provider_model(tmp_path: Path):
 
     assert len(rows) == 1
     assert rows[0]["provider"] == "deepseek"
-    assert rows[0]["model"] == "deepseek-v4-flash"
+    assert rows[0]["category"] == "monetary_policy"
+    assert rows[0]["signal"] == "usd_jpy_up"
+
+
+def test_migrates_legacy_fx_columns_to_category_signal(tmp_path: Path):
+    db = tmp_path / "legacy_cols.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            published_at TEXT,
+            summary TEXT,
+            content_hash TEXT NOT NULL UNIQUE,
+            raw_excerpt TEXT,
+            collected_at TEXT NOT NULL,
+            scored INTEGER DEFAULT 0
+        );
+        CREATE TABLE scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            relevance_score INTEGER NOT NULL,
+            fx_channel TEXT,
+            likely_usdjpy_direction TEXT,
+            confidence TEXT,
+            summary TEXT,
+            why_it_matters TEXT,
+            source_citation TEXT,
+            model_raw TEXT,
+            scored_at TEXT NOT NULL,
+            UNIQUE(article_id, provider, model)
+        );
+        INSERT INTO articles
+            (id, source, title, url, content_hash, collected_at, scored)
+        VALUES
+            (1, 'nikkei_asia', 'Column migration', 'https://example.com/migrate',
+             'migrate', '2026-06-11T00:00:00+00:00', 1);
+        INSERT INTO scores
+            (article_id, provider, model, relevance_score, fx_channel,
+             likely_usdjpy_direction, confidence, summary, why_it_matters,
+             source_citation, model_raw, scored_at)
+        VALUES
+            (1, 'deepseek', 'deepseek-v4-flash', 88, 'intervention',
+             'usd_jpy_down', 'high', 'Intervention risk', 'MOF rhetoric',
+             'Legacy', '{}', '2026-06-11T00:00:00+00:00');
+        """
+    )
+    conn.close()
+
+    store = Store(db)
+    rows = store.get_top_scored(40, provider="deepseek", model="deepseek-v4-flash")
+    assert len(rows) == 1
+    assert rows[0]["category"] == "intervention"
+    assert rows[0]["signal"] == "usd_jpy_down"
 
 
 def test_legacy_scores_migration_requires_backup_for_tracker_db(tmp_path: Path):
